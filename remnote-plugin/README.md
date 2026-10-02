@@ -2,13 +2,15 @@
 
 本项目独立子包；插件 ID `personal-async-workflow`。直接使用官方 `@remnote/plugin-sdk`，不加载、调用或修改现有 RemNote MCP 插件。
 
+当前修复构建 0.1.1：知识大纲里的原生卡片分隔符按字面文本保留，公式与 Markdown 继续使用官方 SDK 解析。`publish_outline` 返回本次创建节点的 SDK 回读快照，便于检查 LaTeX 类型、正文、背面为空和父节点；不提供任意笔记读取接口。此版本需在 RemNote 重新加载后完成真实回归。
+
 ## 首次加载
 
 构建产物由本机服务在 `http://localhost:43141/plugin/` 提供。服务的 `/status` 是连通性检查，返回 `connected:false` 只代表插件尚未连接。
 
 在 RemNote 的 Settings → Plugins → Build → Develop from localhost 填入上述地址。当前已核验的 SDK/MCP 未提供安装插件接口；首次加载需要 RemNote 原生设置页。无需关闭现有 MCP 插件，也不复用其端口或凭据。
 
-首次连接绑定当前知识库，之后拒绝其他知识库或第二个并发客户端。连接密钥由本机 DPAPI 保管，通过同源 bootstrap 发给插件；静态资源可跨域读取，密钥接口不可跨域读取。真实 RemNote 加载后的 Origin 与连接行为尚待验收。
+首次连接绑定当前知识库，之后拒绝其他知识库或第二个并发客户端。连接密钥由本机 DPAPI 保管，通过同源 bootstrap 发给插件；静态资源可跨域读取，密钥接口不可跨域读取。实际 Origin、连接、模板读取、搜索和按日期解析已验收；服务重启后插件会自动重连，重连不会重新读取模板。
 
 ## 仅五项操作
 
@@ -35,7 +37,7 @@ npm run build
 
 ```powershell
 .\.venv\Scripts\python.exe -m async_workflow.cli sync-template
-.\.venv\Scripts\python.exe scripts/remnote_plugin_canary.py --parent-id '<本次明确使用的验收文档 ID>'
+.\.venv\Scripts\python.exe scripts/remnote_plugin_canary.py --parent-id '<本次明确使用的验收文档 ID>' --run-id '<本轮公开测试标识>'
 ```
 
 Canary 使用公开样例；验证嵌套层级、公式、字面符号、只有标题以及相同请求不重复创建。之后必须从 RemNote 实际读取节点核验，构建通过不能代替真实验收。

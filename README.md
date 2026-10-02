@@ -2,7 +2,7 @@
 
 Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → Qwen 转写 → 原结构化提示词 / DeepSeek → 语义分块 → 独立 RemNote 插件、官方 Codex App Server 或已配置 CLI。
 
-主体代码和本机服务已搭建，正式录音入口 `enabled=false`。App Server 创建的真实 Thread 已通过桌面列表、跨进程续接和桌面继续交互验收。独立 RemNote 插件已构建；真实笔记写入、小米重新登录后的云端录音下载和新版整体端到端仍待验收。服务正在运行不等于所有功能已通过。
+主体代码和本机服务已搭建，正式录音入口 `enabled=false`。App Server 创建的真实 Thread 已通过桌面列表、跨进程续接和桌面继续交互验收。独立 RemNote 插件已加载，静态模板、真实搜索、跨日目标解析和基本层级写入已验证；特殊符号在真实验收中暴露 SDK 原生卡片语法问题，修复构建 0.1.1 已就绪，等待 RemNote 重载后复测。小米云端下载和新版整体端到端仍待验收。
 
 ## 边界
 
@@ -36,7 +36,7 @@ Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → Qwen 转
 
 ## 下一步验收
 
-先在 RemNote 加载独立插件：Settings → Plugins → Build → Develop from localhost，地址 `http://localhost:43141/plugin/`。见 [插件说明](remnote-plugin/README.md)。连接成功后运行 `sync-template` 和公开写入 canary，再读取真实节点验证。
+独立插件地址为 `http://localhost:43141/plugin/`，已首次加载；当前需在 RemNote 重新加载该插件以使用 0.1.1 修复。见 [插件说明](remnote-plugin/README.md)。日记模板已显式同步为 19 个有效分支；重载后从原输入重新执行公开写入 canary，核验 SDK 原始回读和真实节点。
 
 小米账户重新扫码成功后，核验音频相册、历史基线、原文件名和一次新增录音下载；之后执行完整混合录音与断线恢复验收。此前保持正式入口关闭。目标不确定的低优先级 RemNote 清单后置，明确指向既有 Thread 名称的完整解析尚未完成。
 

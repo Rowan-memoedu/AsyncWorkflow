@@ -1,7 +1,9 @@
 import type {ReactRNPlugin, PluginRem, RichTextInterface} from '@remnote/plugin-sdk';
+import {outlineRichText} from './rich-text';
 
 type Outline = {text:string; children:Outline[]};
-type NodeState = {id?:string; phase:'creating'|'created'|'ready'; parent:string; text:RichTextInterface};
+type NodeState = {id?:string; phase:'creating'|'created'|'ready'; parent:string; text:RichTextInterface;
+  readback?:{id:string;parent_id:string;text:RichTextInterface;back_text:RichTextInterface}};
 type WriteState = {signature:string; done?:boolean; root_id?:string; nodes:Record<string,NodeState>};
 type SnapshotNode = {id:string; title:string; children:SnapshotNode[]};
 const key = (value:string) => `async-workflow-v1:${value}`;
@@ -119,6 +121,8 @@ export class WorkflowAPI {
     }
     const read=await this.rem(state.id);
     if((await read.getParentRem())?._id!==parent || !(await this.plugin.richText.equals(read.text||[],text))) throw new Error('readback_mismatch');
+    if(read.backText && !(await this.plugin.richText.empty(read.backText,true))) throw new Error('unexpected_back_text');
+    state.readback={id:read._id,parent_id:parent,text:read.text||[],back_text:read.backText||[]};
     state.phase='ready';
     await this.plugin.storage.setLocal(recordKey,state);
     return state;
@@ -137,13 +141,14 @@ export class WorkflowAPI {
     const signature=JSON.stringify({parentId,tree,metadata});
     let state=await this.plugin.storage.getLocal<WriteState>(recordKey);
     if(state && state.signature!==signature) throw new Error('effect_input_changed');
-    if(state?.done) return {root_id:state.root_id,status:'verified',reused:true};
+    if(state?.done) return {root_id:state.root_id,status:'verified',reused:true,
+      readback:Object.values(state.nodes).map(n=>n.readback).filter(Boolean)};
     state ||= {signature,nodes:{}};
     await this.plugin.storage.setLocal(recordKey,state);
     let count=0;
     const visit=async(node:Outline,parent:string,address:string,depth:number):Promise<string>=>{
       if(++count>800 || depth>16 || typeof node.text!=='string' || !Array.isArray(node.children)) throw new Error('outline_invalid');
-      const text=await this.plugin.richText.normalize(await this.plugin.richText.parseFromMarkdown(node.text));
+      const text=await outlineRichText(this.plugin,node.text);
       const nodeKey=key(`publish-node:${effect}:${address}`);
       const stored=await this.plugin.storage.getLocal<NodeState>(nodeKey);
       const owned=await this.ensureNode(nodeKey,stored,parent,text);
@@ -156,11 +161,12 @@ export class WorkflowAPI {
     state.root_id=await visit(root,parentId,'root',0);
     state.done=true;
     await this.plugin.storage.setLocal(recordKey,state);
-    return {root_id:state.root_id,status:'verified',node_count:count};
+    return {root_id:state.root_id,status:'verified',node_count:count,
+      readback:Object.values(state.nodes).map(n=>n.readback).filter(Boolean)};
   }
   async dispatch(method:string,args:any) {
     switch(method) {
-      case 'status': return {connected:true,protocol:1,kb_id:(await this.plugin.kb.getCurrentKnowledgeBaseData())._id};
+      case 'status': return {connected:true,protocol:1,plugin_version:'0.1.1',kb_id:(await this.plugin.kb.getCurrentKnowledgeBaseData())._id};
       case 'template_snapshot': return this.snapshot(args.rem_id);
       case 'search_documents': return this.search(args.queries);
       case 'resolve_daily': return this.daily(args.date,args.branch_path);
