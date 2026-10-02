@@ -40,19 +40,26 @@ def status(cfg):
         return {"account_count":len(accounts), "job_count":len(jobs), "version":request(client, "GET", "/api/system-config/info")["appVersion"]}
 
 
-def configure(cfg):
+def configure(cfg, account_id=None):
     """Baseline metadata before any download; never enable production consumption here."""
     with connection(cfg) as client:
         accounts = request(client, "GET", "/api/account")
-        if len(accounts) != 1:
+        binding = read_json(cfg.root / "xiaomi-binding.json", {})
+        selected = account_id if account_id is not None else binding.get("account_id")
+        candidates = accounts if selected is None else [a for a in accounts if a["id"] == selected]
+        if len(candidates) != 1:
             raise Attention("xiaomi_account_missing_or_ambiguous")
-        account = accounts[0]["id"]
+        account = candidates[0]["id"]
+        if binding and binding.get("account_id") != account:
+            raise Attention("xiaomi_bound_account_changed")
         albums = request(client, "GET", f"/api/album/latest/{account}")
         # 0.19.1 utils/extendFunctions.kt: Album.isAudioAlbum() == remoteId -1.
         audio_albums = [a for a in albums if str(a.get("remoteId")) == "-1" and not a.get("shadow")]
         if not audio_albums:
             raise Attention("xiaomi_audio_album_schema_requires_live_check")
         baseline_path = cfg.root / "xiaomi-baseline.json"
+        if baseline_path.exists() and read_json(baseline_path).get("account_id") != account:
+            raise Attention("xiaomi_baseline_account_changed")
         if not baseline_path.exists():
             assets = []
             for album in audio_albums:
@@ -70,16 +77,23 @@ def configure(cfg):
             "rewriteExifTime":False, "rewriteExifTimeZone":None, "skipExistingFile":True,
             "rewriteFileSystemTime":False, "checkSha1":True, "fetchFromDbSize":2,
             "downloaders":2, "verifiers":1, "exifProcessors":1, "fileTimeWorkers":1, "notify":False}
+        album_ids = [a["id"] for a in audio_albums]
+        def matches(job):
+            # The server omits nullable fields when serializing the config.
+            actual_config = {"rewriteExifTimeZone":None, **job["config"]}
+            return (actual_config == config and job.get("accountId") == account
+                and sorted(job.get("albumIds", [])) == sorted(album_ids)
+                and job.get("syncMode") == "FULL" and job.get("enabled") is True)
         if previous:
             job = previous[0]
-            if job["config"] != config:
+            if not matches(job):
                 raise Attention("xiaomi_existing_job_differs")
         else:
             job = request(client, "POST", "/api/crontab", json={"name":name, "description":"Audio only; original basename and source provenance; historical baseline retained.",
                 "enabled":True, "syncMode":"FULL", "accountId":account,
-                "albumIds":[a["id"] for a in audio_albums], "config":config})
-        atomic(cfg.root / "xiaomi-binding.json", {"job_id":job["id"], "account_id":account, "at":now()})
+                "albumIds":album_ids, "config":config})
         actual = [j for j in request(client, "GET", "/api/crontab") if j["id"] == job["id"]]
-        if len(actual) != 1 or actual[0]["config"] != config:
+        if len(actual) != 1 or not matches(actual[0]):
             raise Attention("xiaomi_config_readback_mismatch")
+        atomic(cfg.root / "xiaomi-binding.json", {"job_id":job["id"], "account_id":account, "at":now()})
         return {"job_id":job["id"], "baseline_count":len(read_json(baseline_path)["asset_ids"]), "configured":True}

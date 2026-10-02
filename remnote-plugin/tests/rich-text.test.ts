@@ -7,8 +7,13 @@ function sdk(parse:(source:string)=>unknown) {
 
 describe('literal outline text through the SDK parser',()=>{
   it('does not turn a literal colon pair into the observed native card separator',async()=>{
-    const plugin=sdk(source=>source.includes('::')?['字面 ',{i:'s'},' 以及 →']:[source]);
+    const plugin=sdk(source=>source.includes('::') || source.includes('→')?['字面 ',{i:'s'},' 以及']:[source]);
     expect(await outlineRichText(plugin,'字面 :: 以及 →')).toEqual(['字面 :: 以及 →']);
+  });
+  it('preserves independent Unicode and ASCII direction notation',async()=>{
+    const source='原因 ⇔ 结果；返回 ← 来源；映射 ⟶ 值；A -> B；C <- D';
+    const plugin=sdk(text=>/[⇔←⟶]|->|<-/.test(text)?[{i:'s'}]:[{i:'m',text}]);
+    expect(await outlineRichText(plugin,source)).toEqual([{i:'m',text:source}]);
   });
   it('restores independent delimiter cases inside formatted and mathematical text',async()=>{
     const plugin=sdk(source=>[{i:'m',text:source},{i:'a',url:source}]);

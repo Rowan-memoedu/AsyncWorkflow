@@ -143,12 +143,20 @@ export class WorkflowAPI {
     if(state && state.signature!==signature) throw new Error('effect_input_changed');
     if(state?.done) return {root_id:state.root_id,status:'verified',reused:true,
       readback:Object.values(state.nodes).map(n=>n.readback).filter(Boolean)};
+    const root={text:tree.text,children:[{text:metadata,children:[]},...tree.children]};
+    const prepared=new Map<string,RichTextInterface>();
+    const prepare=async(node:Outline,address:string):Promise<void>=>{
+      prepared.set(address,await outlineRichText(this.plugin,node.text));
+      for(let i=0;i<node.children.length;i++) await prepare(node.children[i],`${address}/${i}`);
+    };
+    // A parser rejection must not leave a newly created partial outline.
+    await prepare(root,'root');
     state ||= {signature,nodes:{}};
     await this.plugin.storage.setLocal(recordKey,state);
     let count=0;
     const visit=async(node:Outline,parent:string,address:string,depth:number):Promise<string>=>{
       if(++count>800 || depth>16 || typeof node.text!=='string' || !Array.isArray(node.children)) throw new Error('outline_invalid');
-      const text=await outlineRichText(this.plugin,node.text);
+      const text=prepared.get(address)!;
       const nodeKey=key(`publish-node:${effect}:${address}`);
       const stored=await this.plugin.storage.getLocal<NodeState>(nodeKey);
       const owned=await this.ensureNode(nodeKey,stored,parent,text);
@@ -157,7 +165,6 @@ export class WorkflowAPI {
       for(let i=0;i<node.children.length;i++) await visit(node.children[i],owned.id!,`${address}/${i}`,depth+1);
       return owned.id!;
     };
-    const root={text:tree.text,children:[{text:metadata,children:[]},...tree.children]};
     state.root_id=await visit(root,parentId,'root',0);
     state.done=true;
     await this.plugin.storage.setLocal(recordKey,state);
@@ -166,7 +173,7 @@ export class WorkflowAPI {
   }
   async dispatch(method:string,args:any) {
     switch(method) {
-      case 'status': return {connected:true,protocol:1,plugin_version:'0.1.1',kb_id:(await this.plugin.kb.getCurrentKnowledgeBaseData())._id};
+      case 'status': return {connected:true,protocol:1,plugin_version:'0.1.2',kb_id:(await this.plugin.kb.getCurrentKnowledgeBaseData())._id};
       case 'template_snapshot': return this.snapshot(args.rem_id);
       case 'search_documents': return this.search(args.queries);
       case 'resolve_daily': return this.daily(args.date,args.branch_path);

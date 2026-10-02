@@ -2,7 +2,7 @@ import copy
 from pathlib import Path
 import pytest
 
-from async_workflow.core import Settings, Manifest, eligibility, safe_source, file_hash, Attention, UnknownOutcome
+from async_workflow.core import Settings, Manifest, eligibility, recorded_time, safe_source, file_hash, Attention, UnknownOutcome
 from async_workflow.splitter import VoiceDumpSplitResult, validate_split, units
 from async_workflow.markdown import parse_outline
 from async_workflow.executor import execute
@@ -28,6 +28,18 @@ def test_unknown_duration_not_uploaded(duration):
 
 def test_source_type_conflict():
     assert eligibility("20261002_130000.wav",5,"PHONE_CALL") != "eligible"
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("12-31-2025 23.58.m4a", "2025-12-31T23:58:00+08:00"),
+    ("11-09-2026 07.08.09.m4a", "2026-11-09T07:08:09+08:00"),
+    ("02-30-2026 23.58.m4a", None),
+    ("通话12-31-2025 23.58.m4a", None),
+])
+def test_xiaomi_month_first_names(name,expected):
+    result=recorded_time(name)
+    assert (result.isoformat() if result else None) == expected
+    assert eligibility(name,10,"PHONE_CALL") == "source_not_recorder"
 
 
 def test_source_boundary(cfg,tmp_path):

@@ -15,7 +15,7 @@ cfg=Settings.load()
 async def main():
     async with connection(cfg) as session:
         status=await call(session,'status')
-        assert tuple(map(int,status.get('plugin_version','0.0.0').split('.')))>=(0,1,1), 'Reload the updated plugin before this canary'
+        assert tuple(map(int,status.get('plugin_version','0.0.0').split('.')))>=(0,1,2), 'Reload the updated plugin before this canary'
         results=[]
         for key,text in [('symbols','# 公式与符号\n- $E=mc^2$\n  - 字面 :: 以及 →\n- 第二条'),('title','# 只有标题的观点'),('independent','# 独立符号样例\n- **保持原样** A >> B；C ;; D；x==y\n- 数学 $a \\ll b$ 与 $x^2+y^2$')]:
             body={'effect_key':args.run_id+'/'+key,'parent_id':args.parent_id,

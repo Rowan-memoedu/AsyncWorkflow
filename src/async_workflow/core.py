@@ -115,7 +115,7 @@ def safe_source(path: Path, root: Path) -> Path:
 
 def recorded_time(name: str) -> datetime | None:
     stem = Path(name).stem
-    formats = ("%Y%m%d%H%M%S", "%Y%m%d_%H%M%S", "%Y%m%d %H%M%S", "%Y-%m-%d %H-%M-%S", "%Y-%m-%d_%H-%M-%S", "%Y-%m-%d %H.%M.%S", "%Y%m%d%H%M", "%Y%m%d_%H%M", "%Y-%m-%d %H-%M", "%Y年%m月%d日 %H时%M分%S秒")
+    formats = ("%Y%m%d%H%M%S", "%Y%m%d_%H%M%S", "%Y%m%d %H%M%S", "%Y-%m-%d %H-%M-%S", "%Y-%m-%d_%H-%M-%S", "%Y-%m-%d %H.%M.%S", "%Y%m%d%H%M", "%Y%m%d_%H%M", "%Y-%m-%d %H-%M", "%Y年%m月%d日 %H时%M分%S秒", "%m-%d-%Y %H.%M", "%m-%d-%Y %H.%M.%S")
     for fmt in formats:
         try:
             value = datetime.strptime(stem, fmt)

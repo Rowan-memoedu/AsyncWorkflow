@@ -7,7 +7,9 @@ export async function outlineRichText(plugin:ReactRNPlugin,source:string):Promis
   let prefix='AWLITERALX';
   while(source.includes(prefix)) prefix+='X';
   const literals:string[]=[];
-  const protectedText=source.replace(/:{2,}|;{2,}|[:;][<>-]+|[<>]{2,}|>-|={2,}|\{\{|\}\}/g,(value)=>{
+  // Unicode arrows are also native card syntax in the actual SDK parser.
+  // Protect the arrow blocks as literal symbols, including inside math text.
+  const protectedText=source.replace(/:{2,}|;{2,}|[:;][<>-]+|[<>]{2,}|>-|<[-=]+>|[-=]+>|<[-=]+|={2,}|\{\{|\}\}|[\u2190-\u21ff\u27f0-\u27ff\u2900-\u297f]/g,(value)=>{
     const index=literals.push(value)-1;
     return `${prefix}${index}Z`;
   });

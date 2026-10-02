@@ -24,7 +24,7 @@ function fixture() {
     date:{getDailyDoc:async(date:Date)=>{dailyCalls++;return nodes.get('daily') || node('daily',[`${date.getFullYear()}-${date.getMonth()+1}-${date.getDate()}`]);}},
     kb:{getCurrentKnowledgeBaseData:async()=>({_id:'kb'})},
   };
-  return {api:new WorkflowAPI(plugin),parent,node,nodes,values,counts:()=>({creates,dailyCalls}),
+  return {api:new WorkflowAPI(plugin),plugin,parent,node,nodes,values,counts:()=>({creates,dailyCalls}),
     loseText:()=>{loseText=true;},loseCreate:()=>{loseCreate=true;}};
 }
 const outline={text:'Title :: literal → $x^2$',children:[{text:'Reason',children:[{text:'Example',children:[]}]}]};
@@ -61,6 +61,12 @@ describe('owned write recovery',()=>{
   });
   it('validates all nodes before creating any',async()=>{
     const f=fixture();await expect(f.api.publish('record/part','parent',{text:'Root',children:[{text:'',children:[]}]},'source')).rejects.toThrow('outline_invalid');
+    expect(f.counts().creates).toBe(0);
+  });
+  it('rejects a later parser failure before creating a partial outline',async()=>{
+    const f=fixture();
+    f.plugin.richText.parseFromMarkdown=async(text:string)=>text==='Example'?[{i:'s'}]:[text];
+    await expect(f.api.publish('record/part','parent',outline,'source')).rejects.toThrow('unexpected_native_card_delimiter');
     expect(f.counts().creates).toBe(0);
   });
 });
