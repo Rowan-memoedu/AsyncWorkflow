@@ -1,5 +1,6 @@
 import {declareIndexPlugin, type ReactRNPlugin} from '@remnote/plugin-sdk';
 import {WorkflowAPI} from './api';
+import {CommandInboxAPI} from './command-inbox';
 
 let socket:WebSocket|undefined;
 let stopped=false;
@@ -7,6 +8,7 @@ let timer:ReturnType<typeof setTimeout>|undefined;
 async function activate(plugin:ReactRNPlugin) {
   stopped=false;
   const api=new WorkflowAPI(plugin);
+  const commands=new CommandInboxAPI(plugin);
   let chain=Promise.resolve();
   async function connect() {
     if(stopped) return;
@@ -24,7 +26,8 @@ async function activate(plugin:ReactRNPlugin) {
         if(!request.id || !request.method) return;
         chain=chain.then(async()=>{
           try {
-            const result=await api.dispatch(request.method,request.args || {});
+            const handler=request.method.startsWith('command_inbox_')?commands:api;
+            const result=await handler.dispatch(request.method,request.args || {});
             if(current.readyState===WebSocket.OPEN) current.send(JSON.stringify({id:request.id,result}));
           } catch(error) {
             if(current.readyState===WebSocket.OPEN) current.send(JSON.stringify({id:request.id,error:error instanceof Error?error.message:'plugin_error'}));
