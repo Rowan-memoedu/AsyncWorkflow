@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from uuid import uuid4
 
 from prefect import flow, task, serve
 from prefect.cache_policies import INPUTS, TASK_SOURCE
@@ -11,7 +12,7 @@ from prefect.input import RunInput
 from pydantic import Field
 
 from . import asr, executor, remnote, splitter
-from .core import Settings, Manifest, Attention, atomic, digest, file_hash, safe_source, source_metadata, probe, eligibility
+from .core import Settings, Manifest, Attention, UnknownOutcome, atomic, digest, file_hash, safe_source, source_metadata, probe, eligibility
 
 
 class Decision(RunInput):
@@ -124,7 +125,16 @@ def process_segment(recording_id: str, index: int):
     if item['kind']!='command':
         # Unclear knowledge classification is still archival content. Routing
         # chooses a static Daily branch or 其他碎片; no separate question form.
-        return perform(cfg,manifest,key,item)
+        while True:
+            try:
+                return perform(cfg,manifest,key,item)
+            except UnknownOutcome as exc:
+                if str(exc) not in remnote.RECONNECT_REASONS:
+                    raise
+                # A machine outage releases the worker. The existing effect key
+                # reconciles a possibly completed write after reconnecting.
+                # A fresh pause key handles a second disconnect after resuming.
+                suspend_flow_run(key='remnote-connection:'+str(uuid4()))
     if item["route"] == "thread":
         suspend_flow_run(wait_for_input=Decision.with_initial_data(description="此命令明确指定桌面端 Thread，请由有原生工具的 Codex 回合投递；外部服务不会代替。"), key="native-thread")
         raise Attention("native_thread_result_requires_readback")
@@ -142,4 +152,7 @@ def perform(cfg, manifest, key, item):
 
 
 def serve_local():
-    serve(analyze_recording.to_deployment(name="local", concurrency_limit=2), process_segment.to_deployment(name="local", concurrency_limit=2), pause_on_shutdown=False, limit=4)
+    from .command_inbox import deployments
+    serve(analyze_recording.to_deployment(name="local", concurrency_limit=2),
+          process_segment.to_deployment(name="local", concurrency_limit=2),
+          *deployments(), pause_on_shutdown=False, limit=9)

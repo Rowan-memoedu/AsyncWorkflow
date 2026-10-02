@@ -7,11 +7,16 @@ from .markdown import parse_outline
 from .remnote_bridge import token_for
 from . import routing
 
+RECONNECT_REASONS = {
+    'independent_remnote_plugin_connection_lost',
+    'independent_remnote_plugin_not_ready_or_reply_lost',
+}
+
 @asynccontextmanager
-async def connection(cfg):
+async def connection(cfg, *, timeout=190):
     token=token_for(cfg)
     if not token: raise Attention('independent_remnote_plugin_not_initialized')
-    async with httpx.AsyncClient(base_url=cfg.remnote_url,headers={'Authorization':'Bearer '+token},timeout=190) as session:
+    async with httpx.AsyncClient(base_url=cfg.remnote_url,headers={'Authorization':'Bearer '+token},timeout=timeout) as session:
         yield session
 
 async def call(session, method, **arguments):
@@ -25,6 +30,14 @@ async def call(session, method, **arguments):
         error=response.json().get('error',response.json().get('detail','rpc_failed'))
         raise Attention('independent_remnote_plugin:'+str(error))
     return response.json()
+
+async def is_ready(cfg):
+    try:
+        async with connection(cfg,timeout=5) as session:
+            result=await call(session,'status')
+        return result.get('connected') is True and result.get('protocol')==1
+    except Attention:
+        return False
 
 async def sync_template(cfg):
     if not cfg.template_id: raise Attention('template_document_not_bound')

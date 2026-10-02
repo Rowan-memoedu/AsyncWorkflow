@@ -102,6 +102,9 @@ def recover(cfg):
     from prefect.client.orchestration import get_client
     from prefect.states import Scheduled
     from prefect.flow_runs import resume_flow_run
+    import asyncio
+    from . import remnote
+    remnote_ready = None
     with get_client(sync_client=True) as client:
         for file in cfg.artifacts.glob("*/manifest.json"):
             data = read_json(file)
@@ -114,4 +117,9 @@ def recover(cfg):
                 if run.state.is_paused() and run.state.state_details.pause_key == "dependency":
                     segment = next((s for s in data.get("segments", []) if data.get("segment_runs", {}).get(s["key"]) == run_id), None)
                     if segment and all(data["effects"].get(data["segments"][i]["key"], {}).get("status") == "verified" for i in segment["depends_on"]):
+                        resume_flow_run(run.id)
+                if run.state.is_paused() and (run.state.state_details.pause_key or '').startswith('remnote-connection:'):
+                    if remnote_ready is None:
+                        remnote_ready=asyncio.run(remnote.is_ready(cfg))
+                    if remnote_ready:
                         resume_flow_run(run.id)

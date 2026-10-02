@@ -48,3 +48,32 @@ def test_reanalysis_keeps_old_effects_and_never_dispatches(cfg,monkeypatch):
     assert result['dispatch_allowed'] is False
     assert store.path.read_bytes()==before
     assert Path(result['proposal'],'proposal.json').exists()
+
+
+@pytest.mark.parametrize('connected',[False,True])
+def test_only_machine_connection_waits_resume_when_plugin_returns(cfg,monkeypatch,connected):
+    from uuid import UUID
+    from prefect.states import Suspended
+    from async_workflow import ingest
+    from prefect.client import orchestration
+    import prefect.flow_runs
+    ids=[UUID(int=i) for i in (1,2,3)]
+    states={ids[0]:Suspended(pause_key='remnote-connection:a'),
+            ids[1]:Suspended(pause_key='remnote-connection:b'),
+            ids[2]:Suspended(pause_key='native-thread')}
+    store=Manifest(cfg,'c'*64)
+    store.update(segment_runs={str(i):str(value) for i,value in enumerate(ids)})
+    checks,resumed=[],[]
+    class Client:
+        def __enter__(self): return self
+        def __exit__(self,*args): pass
+        def read_flow_run(self,run_id): return SimpleNamespace(id=run_id,state=states[run_id],run_count=1)
+    async def ready(_cfg):
+        checks.append(True)
+        return connected
+    monkeypatch.setattr(orchestration,'get_client',lambda **kwargs:Client())
+    monkeypatch.setattr(remnote,'is_ready',ready)
+    monkeypatch.setattr(prefect.flow_runs,'resume_flow_run',lambda run_id:resumed.append(run_id))
+    ingest.recover(cfg)
+    assert resumed == (ids[:2] if connected else [])
+    assert len(checks)==1

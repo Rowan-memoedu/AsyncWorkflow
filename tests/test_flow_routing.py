@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from async_workflow import flows
-from async_workflow.core import Manifest, Settings
+from async_workflow.core import Manifest, Settings, UnknownOutcome
 
 
 @pytest.fixture
@@ -58,3 +58,30 @@ def test_failed_script_reuses_one_repair_thread_on_flow_retry(setup,monkeypatch)
     assert flows.process_segment.fn('2'*64,0)['repair_thread_id']=='repair-thread'
     assert flows.process_segment.fn('2'*64,0)['repair_thread_id']=='repair-thread'
     assert observed==['one-repair']
+
+
+def test_remnote_outage_waits_without_a_human_form_and_reuses_effect(setup,monkeypatch):
+    cfg,store=setup
+    segment(store,kind='inspiration',route='remnote')
+    attempted,pauses=[],[]
+    def perform(cfg,store,key,item):
+        attempted.append(key)
+        if len(attempted)<=2:
+            raise UnknownOutcome('independent_remnote_plugin_connection_lost')
+        return {'status':'verified','root_id':'same-owned-result'}
+    monkeypatch.setattr(flows,'perform',perform)
+    monkeypatch.setattr(flows,'suspend_flow_run',lambda **kw:pauses.append(kw))
+    assert flows.process_segment.fn('2'*64,0)['status']=='verified'
+    assert attempted==['one','one','one']
+    assert len({p['key'] for p in pauses})==2
+    assert all(p['key'].startswith('remnote-connection:') and 'wait_for_input' not in p for p in pauses)
+
+
+def test_unknown_creation_is_not_treated_as_a_connection_outage(setup,monkeypatch):
+    cfg,store=setup
+    segment(store,kind='inspiration',route='remnote')
+    def perform(*args):
+        raise UnknownOutcome('legacy_remnote_effect_requires_readback_before_migration')
+    monkeypatch.setattr(flows,'perform',perform)
+    with pytest.raises(UnknownOutcome,match='legacy_remnote_effect'):
+        flows.process_segment.fn('2'*64,0)
