@@ -69,12 +69,19 @@ def watch(cfg: Settings):
         current = Settings.load()
         if not current.enabled:
             return
+        historical_ids = {str(value) for value in read_json(current.root / "xiaomi-baseline.json", {}).get("asset_ids", [])}
+        historical_hashes = set(read_json(current.root / "baseline.json", {}).get("hashes", []))
         attempted = 0
         for path in audio_files(current.inbox):
             if attempted >= current.max_batch:
                 break
+            provenance = source_metadata(path, current)
+            if provenance.get("source") == "xiaomi" and provenance["asset_id"] in historical_ids:
+                continue
             # An existing manifest is cheap to inspect; failures remain visible in Prefect.
             identity = file_hash(path)
+            if identity in historical_hashes:
+                continue
             existing = Manifest(current, identity).read()
             if existing.get("analysis_run") or existing.get("eligibility") == "historical_baseline":
                 continue
