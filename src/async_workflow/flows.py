@@ -1,0 +1,145 @@
+from __future__ import annotations
+import asyncio
+import json
+from pathlib import Path
+
+from prefect import flow, task, serve
+from prefect.cache_policies import INPUTS, TASK_SOURCE
+from prefect.deployments import run_deployment
+from prefect.flow_runs import suspend_flow_run
+from prefect.input import RunInput
+from pydantic import Field
+
+from . import asr, executor, remnote, splitter
+from .core import Settings, Manifest, Attention, atomic, digest, file_hash, safe_source, source_metadata, probe, eligibility
+
+
+class Decision(RunInput):
+    answer: str = Field(description="明确回答当前问题；留空不会批准")
+    destination: str = Field(default="", description="需要消歧时填写准确目标名称或路径")
+    approved: bool = Field(default=False, description="只有明确批准本次所列具体动作才勾选")
+    cancel: bool = False
+
+
+@task(persist_result=True, cache_policy=INPUTS + TASK_SOURCE, retries=2, retry_delay_seconds=[10, 30])
+def outline_task(text: str, model: str, prompt_hash: str, adapter_revision: str):
+    return splitter.refine(Settings.load(), text)
+
+
+@task(persist_result=True, cache_policy=INPUTS + TASK_SOURCE, retries=0)
+def split_task(text: str, outline: str, model: str, rule_revision: str):
+    return splitter.split(Settings.load(), text, outline)
+
+
+@flow(name="analyze-recording", log_prints=False, persist_result=True)
+def analyze_recording(path: str, canary: bool = False):
+    cfg = Settings.load()
+    cfg.prepare()
+    source = safe_source(Path(path), cfg.inbox)
+    recording_id = file_hash(source)
+    manifest = Manifest(cfg, recording_id)
+    with manifest.lock:
+        data = manifest.read()
+        paths = data["sources"]
+        if str(source) not in paths:
+            paths.append(str(source))
+        manifest.update(recording_id=recording_id, sources=paths)
+    duration = probe(source, cfg.ffprobe)
+    provenance = source_metadata(source, cfg)
+    reason = eligibility(source.name, duration, provenance.get("source_type"))
+    manifest.update(duration=duration, eligibility=reason, original_name=source.name, provenance=provenance)
+    if reason != "eligible":
+        return {"recording_id": recording_id, "retained_only": reason}
+    if not canary and not cfg.enabled:
+        raise Attention("ingestion_not_enabled")
+    if data.get("segments"):
+        parts = data["segments"]
+    else:
+        text = asr.recognize(cfg, manifest, source)
+        outline = outline_task(text, cfg.deepseek_model, splitter.PROMPT_HASH, splitter.REFINE_REVISION)
+        atomic(manifest.folder / "outline.md", outline, text=True)
+        parts = split_task(text, outline, cfg.deepseek_model, digest(splitter.SYSTEM))
+        version = {"audio": recording_id, "asr":cfg.asr_model, "model":cfg.deepseek_model, "prompt":splitter.PROMPT_HASH, "refine_adapter":splitter.REFINE_REVISION, "splitter":digest(splitter.SYSTEM), "schema":1}
+        version_id = digest(json.dumps(version, sort_keys=True))
+        for item in parts:
+            item["key"] = digest(recording_id + ":" + str(item["source_spans"]))[:24]
+            item["markdown"] = outline if len(parts) == 1 else outline_task(item["raw_text"], cfg.deepseek_model, splitter.PROMPT_HASH, splitter.REFINE_REVISION)
+            atomic(manifest.folder / (item["key"] + ".md"), item["markdown"], text=True)
+            atomic(manifest.folder / (item["key"] + ".json"), {"recording":{"id":recording_id, "audio":str(source), "duration":duration, **provenance}, "analysis_version":version_id, "segment":{k:v for k,v in item.items() if k != "markdown"}})
+        atomic(manifest.folder / "analysis-version.json", version)
+        manifest.update(segments=parts, prompt_hash=splitter.PROMPT_HASH, model=cfg.deepseek_model, analysis_version=version_id)
+    if file_hash(source) != recording_id:
+        raise Attention("source_changed_during_analysis")
+    runs = manifest.read().get("segment_runs", {})
+    for item in parts:
+        if item["key"] not in runs:
+            run = run_deployment("process-segment/local", parameters={"recording_id": recording_id, "index": item["index"]}, timeout=0, idempotency_key=recording_id + ":" + item["key"], as_subflow=False)
+            runs[item["key"]] = str(run.id)
+            manifest.update(segment_runs=runs)
+    return {"recording_id": recording_id, "analysis": "completed", "segment_runs": runs}
+
+
+@flow(name="process-segment", log_prints=False, persist_result=True)
+def process_segment(recording_id: str, index: int):
+    cfg = Settings.load()
+    manifest = Manifest(cfg, recording_id)
+    data = manifest.read()
+    item = dict(data["segments"][index])
+    key = item["key"]
+    existing = manifest.effect(key)
+    if existing and existing["status"] in ("verified", "cancelled"):
+        return existing
+    if item["cancelled"]:
+        manifest.save_effect(key, {"status": "cancelled"})
+        return {"status": "cancelled"}
+    # Waiting in a separate child deployment leaves other independent segments runnable.
+    for dependency in item["depends_on"]:
+        previous = manifest.effect(data["segments"][dependency]["key"])
+        if not previous or previous["status"] != "verified":
+            # Machine dependency, not a human permission question. The watcher resumes
+            # this native suspension only after reading verified prerequisite receipts.
+            suspend_flow_run(key="dependency")
+            previous = manifest.effect(data["segments"][dependency]["key"])
+            if not previous or previous["status"] != "verified":
+                raise Attention("dependency_not_verified")
+    if item['kind']=='command' and item['route']!='thread':
+        if item['route']=='script' and item['risk']!='normal':
+            # A configured script cannot hold a conversation or interpret an
+            # approval. Hand this command to a real Thread before any script
+            # process starts; its agent can resolve the specific uncertainty.
+            item={**item,'route':'codex'}
+        result=perform(cfg,manifest,key,item)
+        if item['route']=='script' and result['status']=='failed' and not result.get('repair_thread_id'):
+            # The failing script had no native Thread. Create exactly one repair
+            # task through the same official SDK and keep its exact native ID.
+            repair={**item,'route':'codex','title':'修复脚本：'+item.get('action',''),
+                    'raw_text':'用户配置脚本执行失败，请分析并修复该脚本。原始任务：'+item['raw_text']
+                      +'\n脚本 ID：'+item.get('action','')+'\n本次执行日志目录：'+result['output_dir']
+                      +'\n退出码：'+str(result.get('exit_code'))
+                      +'\n修复工作流并验证；不要盲目重放可能已产生副作用的原动作。'}
+            repaired=executor.execute(cfg,manifest,key+'-repair',repair)
+            result={**result,'repair_thread_id':repaired.get('session_id'),'repair_status':repaired['status']}
+            manifest.save_effect(key,result)
+        return result
+    if item['kind']!='command':
+        # Unclear knowledge classification is still archival content. Routing
+        # chooses a static Daily branch or 其他碎片; no separate question form.
+        return perform(cfg,manifest,key,item)
+    if item["route"] == "thread":
+        suspend_flow_run(wait_for_input=Decision.with_initial_data(description="此命令明确指定桌面端 Thread，请由有原生工具的 Codex 回合投递；外部服务不会代替。"), key="native-thread")
+        raise Attention("native_thread_result_requires_readback")
+    raise Attention("unsupported_command_route")
+
+
+def perform(cfg, manifest, key, item):
+    if item["kind"] == "command":
+        return executor.execute(cfg, manifest, key, item)
+    metadata = f"类型：{item['kind']}\n录音：{manifest.read()['original_name']}\n时长：{manifest.read()['duration']} 秒\n来源：{manifest.read()['sources'][0]}"
+    # Serialize document writes, but do not hold this lock while waiting for input.
+    from filelock import FileLock
+    with FileLock(str(cfg.root / "locks/remnote-write.lock")):
+        return asyncio.run(remnote.publish(cfg, manifest, key, item["markdown"], item["destination"], metadata, raw_text=item['raw_text']))
+
+
+def serve_local():
+    serve(analyze_recording.to_deployment(name="local", concurrency_limit=2), process_segment.to_deployment(name="local", concurrency_limit=2), pause_on_shutdown=False, limit=4)

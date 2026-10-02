@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "personal-async-workflow"
+version = "0.1.0"
+description = "Local voice ingestion and semantic routing on Prefect"
+requires-python = ">=3.12"
+dependencies = ["prefect==3.8.7", "watchfiles==1.3.0", "filelock==4.0.9", "pydantic==2.13.5", "openai==3.23.0", "openai-codex==0.159.0", "httpx==0.28.1", "fastapi==0.142.2", "uvicorn==0.54.0", "websockets==16.1.1", "markdown-it-py==4.2.0", "alibabacloud-oss-v2==1.4.0", "jsonschema", "pywin32; sys_platform == 'win32'"]
+
+[project.optional-dependencies]
+test = ["pytest==9.1.1"]
+
+[project.scripts]
+async-workflow = "async_workflow.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

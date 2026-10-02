@@ -33,5 +33,9 @@ artifacts/
 .coverage
 coverage/
 config.local.*
+/config.json
+*.dpapi.json
+daily-template.json
+model-attempts/
 prompts/refine.md
 docs/private/

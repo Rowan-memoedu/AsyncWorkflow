@@ -1,0 +1,41 @@
+import {declareIndexPlugin, type ReactRNPlugin} from '@remnote/plugin-sdk';
+import {WorkflowAPI} from './api';
+
+let socket:WebSocket|undefined;
+let stopped=false;
+let timer:ReturnType<typeof setTimeout>|undefined;
+async function activate(plugin:ReactRNPlugin) {
+  stopped=false;
+  const api=new WorkflowAPI(plugin);
+  let chain=Promise.resolve();
+  async function connect() {
+    if(stopped) return;
+    try {
+      const base='http://localhost:43141';
+      const response=await fetch(`${base}/bootstrap`,{cache:'no-store'});
+      if(!response.ok) throw new Error('bootstrap_unavailable');
+      const {token}=await response.json();
+      const kb=await plugin.kb.getCurrentKnowledgeBaseData();
+      const current=new WebSocket('ws://localhost:43141/plugin-socket');
+      socket=current;
+      current.onopen=()=>current.send(JSON.stringify({kind:'hello',token,kb_id:kb._id,protocol:1}));
+      current.onmessage=(event)=>{
+        const request=JSON.parse(event.data);
+        if(!request.id || !request.method) return;
+        chain=chain.then(async()=>{
+          try {
+            const result=await api.dispatch(request.method,request.args || {});
+            if(current.readyState===WebSocket.OPEN) current.send(JSON.stringify({id:request.id,result}));
+          } catch(error) {
+            if(current.readyState===WebSocket.OPEN) current.send(JSON.stringify({id:request.id,error:error instanceof Error?error.message:'plugin_error'}));
+          }
+        });
+      };
+      current.onclose=()=>{if(!stopped)timer=setTimeout(connect,5000);};
+      current.onerror=()=>current.close();
+    } catch {if(!stopped)timer=setTimeout(connect,5000);}
+  }
+  await connect();
+}
+async function deactivate() {stopped=true;if(timer)clearTimeout(timer);socket?.close();}
+declareIndexPlugin(activate,deactivate);
