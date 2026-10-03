@@ -73,3 +73,30 @@ def test_partial_legacy_mcp_effect_is_never_recreated(cfg):
     store.save_effect('part',{'status':'submitted','root_id':'old-root'})
     with pytest.raises(UnknownOutcome,match='legacy_remnote'):
         asyncio.run(remnote.publish(cfg,store,'part','# One','','source'))
+
+
+def test_new_document_does_not_search_or_substitute_an_existing_document(cfg,monkeypatch):
+    async def forbidden(*a,**k): pytest.fail('creating an explicitly named new document must not search substitutes')
+    monkeypatch.setattr(routing,'ask',lambda *a,**k:pytest.fail('no model target search needed'))
+    route=asyncio.run(routing.plan(cfg,None,forbidden,'Field notes','Create a document with this title.',
+        {'recorded_at':'2026-10-03T12:00:00+08:00'},item={'document_action':'create'}))
+    assert route['type']=='create_document' and route['title']=='Field notes' and route['parent_id'] is None
+
+
+def test_learning_branch_rejects_missing_learning_context(cfg,monkeypatch):
+    template={'template_id':'template','version':'study','tree':{'children':[
+        {'title':'学习日志','children':[{'title':'认知科学相关','children':[]}]},{'title':'其他碎片','children':[]}]}}
+    atomic(cfg.root/'daily-template.json',template)
+    def ask(c,s,i,p,validator):
+        return validator(routing.DailyChoice(branch_path=['学习日志','认知科学相关'],cross_category=False,
+            reason='mentions memory but not actual study',learning_basis='none'))
+    monkeypatch.setattr(routing,'ask',ask)
+    route=asyncio.run(routing.plan(cfg,None,None,'','A product interface overloads working memory.',{'recorded_at':'2026-10-03T12:00:00+08:00'}))
+    assert route['branch_path']==['其他碎片']
+
+
+def test_software_information_matches_static_branch_without_reading_daily_template(cfg):
+    cfg.todo_document_id='todo'
+    atomic(cfg.root/'todo-targets.json',{'todo_id':'todo','version':'1','software':[{'id':'mail','title':'Mail'}]})
+    route=asyncio.run(routing.plan(cfg,None,None,'','A note for mail.',{'recorded_at':'2026-10-03T12:00:00+08:00'},item={'kind':'information','software':'mail'}))
+    assert route['type']=='todo' and route['category']=='information' and route['software']=='Mail'

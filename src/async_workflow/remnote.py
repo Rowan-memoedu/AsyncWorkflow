@@ -51,7 +51,37 @@ async def sync_template(cfg):
     atomic(cfg.root/'daily-template.json',result)
     return {'version':version,'branch_count':len(paths),'synced_at':result['synced_at']}
 
-async def publish(cfg, manifest, effect_key, markdown, requested, metadata, raw_text=None):
+async def sync_targets(cfg):
+    if not cfg.todo_document_id: raise Attention('todo_document_not_bound')
+    async with connection(cfg) as session:
+        tree=await call(session,'targets_snapshot',rem_id=cfg.todo_document_id)
+    branches={name:[c for c in tree['children'] if c['title']==name] for name in ('购物清单','信息清单')}
+    if any(len(values)!=1 for values in branches.values()): raise Attention('todo_branches_not_unique')
+    import json
+    result={'todo_id':cfg.todo_document_id,'version':digest(json.dumps(tree,ensure_ascii=False,sort_keys=True)),
+            'shopping_id':branches['购物清单'][0]['id'],'information_id':branches['信息清单'][0]['id'],
+            'software':[{'id':c['id'],'title':c['title']} for c in branches['信息清单'][0]['children'] if c['title'].strip()],
+            'synced_at':now()}
+    atomic(cfg.root/'todo-targets.json',result)
+    return result
+
+async def resolve_target(cfg,session,route,recording_id):
+    if route['type']=='daily':
+        target=await call(session,'resolve_daily',date=route['recorded_day'],branch_path=route['branch_path'])
+        return {'parent':target['parent_id'],'daily_id':target['daily_id']}
+    if route['type']=='create_document':
+        import json
+        identity=digest(json.dumps([route['title'],route.get('parent_id')],ensure_ascii=False))[:24]
+        target=await call(session,'create_document',effect_key=recording_id+'/document/'+identity,
+                          title=route['title'],parent_id=route.get('parent_id'))
+        if not target.get('is_document') or not target.get('document_id'): raise UnknownOutcome('new_document_readback_missing')
+        return {'parent':target['document_id'],'created_document_id':target['document_id']}
+    if route['type']=='todo':
+        target=await call(session,'resolve_todo',category=route['category'],software=route.get('software',''))
+        return {'parent':target['parent_id']}
+    return {'parent':route['parent_id']}
+
+async def publish(cfg, manifest, effect_key, markdown, requested, metadata, raw_text=None, *, item=None):
     saved=manifest.effect(effect_key)
     if saved and saved.get('status')=='verified': return saved
     if saved and saved.get('backend')!='independent-remnote-plugin':
@@ -59,18 +89,18 @@ async def publish(cfg, manifest, effect_key, markdown, requested, metadata, raw_
     tree=parse_outline(markdown)
     async with connection(cfg) as session:
         if not saved:
-            route=await routing.plan(cfg,session,call,requested,raw_text or markdown,manifest.read().get('provenance',{}))
+            route=await routing.plan(cfg,session,call,requested,raw_text or markdown,manifest.read().get('provenance',{}),item=item)
             saved={'backend':'independent-remnote-plugin','status':'not_started','routing':route}
             manifest.save_effect(effect_key,saved)
         route=saved['routing']
         if not saved.get('parent'):
-            if route['type']=='daily':
-                target=await call(session,'resolve_daily',date=route['recorded_day'],branch_path=route['branch_path'])
-                saved.update(parent=target['parent_id'],daily_id=target['daily_id'])
-            else: saved['parent']=route['parent_id']
+            saved.update(await resolve_target(cfg,session,route,manifest.folder.name))
             manifest.save_effect(effect_key,saved)
         meta=metadata+'\n录音日期：'+route['recorded_day']
         if requested: meta+='\n口述去处：'+requested
+        saved['metadata_log']=meta
+        saved['plugin_effect_key']=manifest.folder.name+'/'+effect_key
+        saved['content_format']='content-only'
         saved['status']='outcome_unknown'
         manifest.save_effect(effect_key,saved)
         result=await call(session,'publish_outline',effect_key=manifest.folder.name+'/'+effect_key,

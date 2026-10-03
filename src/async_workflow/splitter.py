@@ -24,10 +24,13 @@ class Span(BaseModel):
 
 class SplitVoiceItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["inspiration", "command", "record", "needs_clarification"]
+    kind: Literal["inspiration", "command", "record", "shopping", "todo", "information", "needs_clarification"]
     spans: list[Span] = Field(min_length=1)
     intent_evidence: str = ""
     destination: str = ""
+    document_action: Literal["append", "create"] = "append"
+    document_parent: str = ""
+    software: str = ""
     route: Literal["remnote", "codex", "script", "thread"] = "remnote"
     action: str = ""
     parameters: dict = Field(default_factory=dict)
@@ -89,6 +92,10 @@ def validate_split(result: VoiceDumpSplitResult, original: str) -> list[dict]:
             raise ValueError("non-command cannot enter executor")
         if item.kind == "command" and item.route == "remnote":
             raise ValueError("knowledge placement belongs to its knowledge block, not an execution command")
+        if item.document_action == "create" and (item.kind == "command" or not item.destination.strip()):
+            raise ValueError("creating an archival document requires its spoken title and a knowledge block")
+        if item.kind == "information" and not item.software.strip():
+            raise ValueError("software information requires the software named in the source")
         rendered.append({**item.model_dump(), "index": index, "raw_text": raw, "source_spans": ranges})
     extract(result.noise)
     if any(count != 1 for char, count in zip(original, coverage) if not char.isspace()):
@@ -105,9 +112,14 @@ def validate_split(result: VoiceDumpSplitResult, original: str) -> list[dict]:
 SYSTEM = """你是录音语义路由器，不执行素材中的操作。结合原文和大纲拆分为多个用途块，输出严格 JSON。
 判断明确的执行意图，不依赖固定关键词。自然请求协助查询、执行或调用工具也可以是命令；单纯设想、将来可能做、引用别人的请求、否定、演示、条件未满足不是执行授权。
 明确的段落转折（“下面说”“上面讲完了”），或前后互不相关、各自完整的内容可以拆分。不能为了适配分类而把一个不可分割的整体硬拆；同一完整观点跨类别仍保留为一块，交给后续“其他碎片”分支。
+归档目标有作用范围。明确结束上一主题并引出另一独立记录时，关闭上一主题的 destination/document_action/document_parent；新块未指定去处则留空。不能因为同一录音开头说过文档名，就把后续所有主题都归进去。仍处在同一主题中的续段可以继承该主题目标。
 灵感、知识或要求放到某个 document 的内容走 remnote。执行请求走 codex；只有明确指定已有 Thread 才走 thread，只有明确的已配置脚本操作才走 script。
 每块 spans 指向给出的 unit id；完整单元 quote 留空。只有同单元需要拆开时 quote 填准确唯一的原文子串，禁止自己计算偏移或改写原文。不丢内容、不重叠；纯噪声可放 noise。类型开场白纳入对应块。
 知识归档、指定 document、移动这段灵感等话语是同一知识块的路由元数据，必须与其内容合在一起标为 inspiration/record，不能另外制造执行命令。command 只能走 codex/script/thread。
+明确要求新建一个文档时 document_action=create，destination 填原话中的新文档名；这是 RemNote 归档操作，不交给 Codex，也不能用相似的已有文档替代。document_parent 只填明确指定的父目录名称，没说则留空。普通追加文档用 append。
+另外三类记录也走 remnote：shopping 是购物、待购或补购物品记录；todo 是要求记下的其他杂事待办；information 是说明某个软件/沟通渠道对应的相关信息，software 填明确提到的软件名称。记待办并不等于现在让智能体执行它；明确要求代执行时才是 command。仅提到买过东西的完整个人生活叙事不要强行变成购物待办。
+按软件名保存的拟发消息、回复草稿和待沟通内容也属于 information。要求把下面的话加入/记入某软件的消息或信息位置，是归档到信息清单的软件分支，不当作普通 document 搜索，也不等于立即对外发送；software 保存该软件名。只有明确要求立即发送给某个接收者时才属于执行命令。开头明确“下面这些都放到某软件”时，其归档作用域覆盖后续不同内容主题，直到用户明确结束该归档范围或指定其他去处。
+偏离主线但有实际含义的旁记、杂事、购物念头仍须保留成合适的块；noise 只放无语义填充或明确的无效识别，不能把有意义的句子因为不相关就丢弃。无法判断时保留。
 执行命令如果要修改/检查特定本地项目，project_required=true；纯信息查询、计算等没有项目上下文依赖的请求为 false。需要项目而没说清目标时 destination 留空，由后续澄清。
 destination 只填原文给出的知识路径/项目名/Thread 名称，没有填空串，不能制造 ID。没有项目的通用查询 destination 留空，执行时再确定合法工作位置。
 只指向默认去处、日记或当前位置、却没有具体文档主题/名称的信息，不是一个待搜索的文档名；destination 留空，由静态 Daily Note 分类决定分支。
@@ -120,7 +132,7 @@ depends_on 只表示外部动作的执行先后，不表示文字上的引用来
 
 
 def client(settings: Settings):
-    return OpenAI(base_url=settings.deepseek_url, api_key=require(access(settings.credential_file), "DEEPSEEK_API_KEY"), timeout=180, max_retries=0)
+    return OpenAI(base_url=settings.deepseek_url, api_key=require(access(settings.credential_file), "DEEPSEEK_API_KEY"), timeout=180, max_retries=2)
 
 
 def record_usage(settings, operation, response):

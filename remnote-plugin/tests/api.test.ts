@@ -3,14 +3,14 @@ import {WorkflowAPI} from '../src/api';
 
 function fixture() {
   const values=new Map<string,any>(), nodes=new Map<string,any>();
-  let creates=0, loseText=false, loseCreate=false, dailyCalls=0;
+  let creates=0, loseText=false, loseCreate=false, loseMove=false, dailyCalls=0;
   function node(id:string,text:any[]=[],parent?:string) {
-    const value={_id:id,text,parent,
+    const value={_id:id,text,parent,isDoc:false,
       getParentRem:async()=>nodes.get(value.parent),
       getChildrenRem:async()=>[...nodes.values()].filter(n=>n.parent===id),
-      setParent:async(p:string)=>{value.parent=p;},
+      setParent:async(p:string)=>{value.parent=p;if(loseMove){loseMove=false;throw new Error('lost_move_reply');}},
       setText:async(t:any)=>{value.text=t;if(loseText){loseText=false;throw new Error('lost_text_reply');}},
-      isDocument:async()=>true};
+      isDocument:async()=>value.isDoc,setIsDocument:async(v:boolean)=>{value.isDoc=v;}};
     nodes.set(id,value);return value;
   }
   const parent=node('parent',['Target']);
@@ -25,7 +25,7 @@ function fixture() {
     kb:{getCurrentKnowledgeBaseData:async()=>({_id:'kb'})},
   };
   return {api:new WorkflowAPI(plugin),plugin,parent,node,nodes,values,counts:()=>({creates,dailyCalls}),
-    loseText:()=>{loseText=true;},loseCreate:()=>{loseCreate=true;}};
+    loseText:()=>{loseText=true;},loseCreate:()=>{loseCreate=true;},loseMove:()=>{loseMove=true;}};
 }
 const outline={text:'Title :: literal → $x^2$',children:[{text:'Reason',children:[{text:'Example',children:[]}]}]};
 
@@ -33,14 +33,14 @@ describe('owned write recovery',()=>{
   it('reuses a completed effect after its response is lost',async()=>{
     const f=fixture(); const first=await f.api.publish('record/part','parent',outline,'source');
     const second=await f.api.publish('record/part','parent',outline,'source');
-    expect(second.root_id).toBe(first.root_id);expect(f.counts().creates).toBe(4);
+    expect(second.root_id).toBe(first.root_id);expect(f.counts().creates).toBe(3);
     expect(f.nodes.get(first.root_id).text).toEqual([outline.text]);
   });
   it('recovers a lost setText response without recreating the rem',async()=>{
     const f=fixture();f.loseText();
     await expect(f.api.publish('record/part','parent',outline,'source')).rejects.toThrow('lost_text_reply');
     expect((await f.api.publish('record/part','parent',outline,'source')).status).toBe('verified');
-    expect(f.counts().creates).toBe(4);
+    expect(f.counts().creates).toBe(3);
   });
   it('never overwrites an edit after interruption',async()=>{
     const f=fixture();f.loseText();
@@ -68,6 +68,73 @@ describe('owned write recovery',()=>{
     f.plugin.richText.parseFromMarkdown=async(text:string)=>text==='Example'?[{i:'s'}]:[text];
     await expect(f.api.publish('record/part','parent',outline,'source')).rejects.toThrow('unexpected_native_card_delimiter');
     expect(f.counts().creates).toBe(0);
+  });
+});
+
+describe('content-only writes, documents and list targets',()=>{
+  it('writes the original outline without a metadata child',async()=>{
+    const f=fixture();const result=await f.api.publish('content','parent',outline,'private log only');
+    expect((await f.nodes.get(result.root_id).getChildrenRem()).map((n:any)=>n.text)).toEqual([['Reason']]);
+    expect([...f.nodes.values()].some(n=>n.text.includes('private log only'))).toBe(false);
+  });
+  it('creates a real root document once and preserves its ID on retry',async()=>{
+    const f=fixture();const first=await f.api.createDocument('new-doc','Research notes');
+    const again=await f.api.createDocument('new-doc','Research notes');
+    expect(first.document_id).toBe(again.document_id);expect(again.is_document).toBe(true);
+    expect(f.nodes.get(first.document_id).parent).toBeUndefined();expect(f.counts().creates).toBe(1);
+  });
+  it('uses an explicit parent and does not repeat an unknown creation',async()=>{
+    const f=fixture();const r=await f.api.createDocument('child-doc','Scoped notes','parent');
+    expect(f.nodes.get(r.document_id).parent).toBe('parent');
+    f.loseCreate();await expect(f.api.createDocument('unknown','Other')).rejects.toThrow();
+    await expect(f.api.createDocument('unknown','Other')).rejects.toThrow('create_unknown_no_replay');
+    expect(f.counts().creates).toBe(2);
+  });
+  it('resolves scoped shopping and software branches without replacing the daily template',async()=>{
+    const f=fixture();f.node('template',['日记模板']);f.node('other',['其他碎片'],'template');await f.api.snapshot('template');
+    f.node('todo',['待办清单']);f.node('shop',['购物清单'],'todo');f.node('info',['信息清单'],'todo');f.node('mail',['Email'],'info');
+    await f.api.snapshot('todo','targets');
+    expect(await f.api.todo('shopping')).toEqual({parent_id:'shop'});
+    expect(await f.api.todo('todo')).toEqual({parent_id:'todo'});
+    expect((await f.api.todo('information','email')).parent_id).toBe('mail');
+    const first=await f.api.todo('information','Calendar');
+    expect((await f.api.todo('information','calendar')).parent_id).toBe(first.parent_id);
+    expect((await f.api.daily('2026-10-03',['其他碎片'])).parent_id).toBeTruthy();
+  });
+});
+
+async function legacyFixture() {
+  const f=fixture();f.node('trash',['trash']);f.node('destination',['Correct destination']);
+  const result=await f.api.publish('legacy','parent',outline,'source');
+  f.node('legacy-meta',['source'],result.root_id);
+  const stored=f.values.get('async-workflow-v1:publish:legacy');delete stored.format;
+  stored.nodes['root/0']={id:'legacy-meta',phase:'ready',parent:result.root_id,text:['source']};
+  return {...f,rootId:result.root_id};
+}
+
+describe('stage correction of owned results',()=>{
+  it('keeps the existing body and root IDs, archives only metadata and moves the root',async()=>{
+    const f=await legacyFixture();const before=[...f.nodes.keys()];
+    const r=await f.api.relocate('legacy','repair-1','destination','trash');
+    expect(r.root_id).toBe(f.rootId);expect(f.nodes.get('legacy-meta').parent).toBe('trash');
+    expect(f.nodes.get(f.rootId).parent).toBe('destination');expect([...f.nodes.keys()]).toEqual(before);
+    expect((await f.api.relocate('legacy','repair-1','destination','trash')).reused).toBe(true);
+  });
+  it('recovers a lost move reply through readback without repeating creation',async()=>{
+    const f=await legacyFixture();f.loseMove();
+    await expect(f.api.relocate('legacy','repair-2','destination','trash')).rejects.toThrow('lost_move_reply');
+    expect((await f.api.relocate('legacy','repair-2','destination','trash')).status).toBe('verified');
+    expect(f.counts().creates).toBe(3);
+  });
+  it('refuses to change a result with user-edited body text',async()=>{
+    const f=await legacyFixture();f.nodes.get('owned-2').text=['User changed the note'];
+    await expect(f.api.relocate('legacy','repair-3','destination','trash')).rejects.toThrow('owned_rem_edited');
+    expect(f.nodes.get(f.rootId).parent).toBe('parent');expect(f.nodes.get('legacy-meta').parent).toBe(f.rootId);
+  });
+  it('refuses to remove metadata that has acquired user children',async()=>{
+    const f=await legacyFixture();f.node('user-child',['My annotation'],'legacy-meta');
+    await expect(f.api.relocate('legacy','repair-4','destination','trash')).rejects.toThrow('owned_metadata_edited');
+    expect(f.nodes.get('legacy-meta').parent).toBe(f.rootId);
   });
 });
 describe('template and recording day',()=>{

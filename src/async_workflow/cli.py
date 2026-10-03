@@ -36,6 +36,10 @@ def main():
     commands.add_parser("disable")
     commands.add_parser("enable")
     commands.add_parser("sync-template")
+    commands.add_parser("sync-targets")
+    repair = commands.add_parser("repair")
+    repair.add_argument("recording_id")
+    repair.add_argument("--from", dest="stage", choices=("split","routing","publish"), required=True)
     retry = commands.add_parser("retry")
     retry.add_argument("run_id")
     verify = commands.add_parser("verify-effect")
@@ -71,6 +75,15 @@ def main():
     elif args.command == "sync-template":
         from .remnote import sync_template
         print(json.dumps(asyncio.run(sync_template(cfg)),ensure_ascii=False,indent=2))
+    elif args.command == "sync-targets":
+        from .remnote import sync_targets
+        print(json.dumps(asyncio.run(sync_targets(cfg)),ensure_ascii=False,indent=2))
+    elif args.command == "repair":
+        from .repairs import identity
+        from prefect.deployments import run_deployment
+        operation=identity(cfg,args.recording_id,args.stage)
+        run=run_deployment('repair-recording/local',parameters={'recording_id':args.recording_id,'stage':args.stage,'operation_id':operation},timeout=0,idempotency_key='repair:'+args.recording_id+':'+operation,as_subflow=False)
+        print(json.dumps({'run_id':str(run.id),'operation_id':operation,'stage':args.stage}))
     elif args.command in ("enable", "disable"):
         if args.command == "enable":
             from .routing import snapshot

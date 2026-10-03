@@ -68,6 +68,9 @@ class Settings(BaseModel):
     codex: Path
     remnote_url: str = "http://127.0.0.1:43141"
     template_id: str = ""
+    todo_document_id: str = ""
+    trash_rem_id: str = ""
+    new_document_parent_id: str = ""
     prefect_url: str = "http://127.0.0.1:4200/api"
     deepseek_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-flash"

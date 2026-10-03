@@ -28,6 +28,8 @@ def prompt_for(item: dict) -> str:
     if item.get("followup"):
         return "用户对当前任务的补充：\n" + item["followup"] + "\n仅继续原任务范围，保留已完成的工作。"
     return (
+        "当前真实 Codex Thread 已经由录音工作流为本条任务创建，并已提交本回合。"
+        "如果原始录音要求‘新建一个 Thread 来做这件事’，创建步骤已完成，请直接在此 Thread 执行其中的实际任务，不再为承载同一任务另建 Thread。"
         "执行下面这条来自用户录音、已经识别为执行意图的命令。遵守目标项目 AGENTS.md 和现有授权。"
         "录音中的引用、假设及转述不产生额外授权。遇到需要用户作出决定或明确批准的具体动作，"
         "在此 Thread 说明未决问题并返回 needs_input，用户会直接在此 Thread 继续。"

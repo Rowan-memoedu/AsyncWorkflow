@@ -2,9 +2,10 @@ import type {ReactRNPlugin, PluginRem, RichTextInterface} from '@remnote/plugin-
 import {outlineRichText} from './rich-text';
 
 type Outline = {text:string; children:Outline[]};
-type NodeState = {id?:string; phase:'creating'|'created'|'ready'; parent:string; text:RichTextInterface;
-  readback?:{id:string;parent_id:string;text:RichTextInterface;back_text:RichTextInterface}};
-type WriteState = {signature:string; done?:boolean; root_id?:string; nodes:Record<string,NodeState>};
+type NodeState = {id?:string; phase:'creating'|'created'|'ready'; parent:string|null; text:RichTextInterface;
+  readback?:{id:string;parent_id:string|null;text:RichTextInterface;back_text:RichTextInterface}};
+type WriteState = {signature:string; done?:boolean; root_id?:string; nodes:Record<string,NodeState>;
+  format?:'content-only'; current_parent?:string; metadata_removed?:boolean};
 type SnapshotNode = {id:string; title:string; children:SnapshotNode[]};
 const key = (value:string) => `async-workflow-v1:${value}`;
 
@@ -16,7 +17,7 @@ export class WorkflowAPI {
     return rem;
   }
   async title(rem:PluginRem) { return this.plugin.richText.toString(rem.text || []); }
-  async snapshot(id:string) {
+  async snapshot(id:string,slot='template') {
     let count=0;
     const visit=async(rem:PluginRem,depth:number):Promise<SnapshotNode>=>{
       if(depth>12 || ++count>500) throw new Error('template_too_large');
@@ -25,7 +26,7 @@ export class WorkflowAPI {
       return {id:rem._id,title:await this.title(rem),children};
     };
     const root=await visit(await this.rem(id),0);
-    await this.plugin.storage.setLocal(key('template'),root);
+    await this.plugin.storage.setLocal(key(slot),root);
     return root;
   }
   async search(queries:string[]) {
@@ -98,7 +99,7 @@ export class WorkflowAPI {
     await this.plugin.storage.setLocal(cacheKey,result);
     return result;
   }
-  private async ensureNode(recordKey:string,state:NodeState|undefined,parent:string,text:RichTextInterface) {
+  private async ensureNode(recordKey:string,state:NodeState|undefined,parent:string|null,text:RichTextInterface) {
     if(!state) {
       state={phase:'creating',parent,text};
       await this.plugin.storage.setLocal(recordKey,state);
@@ -115,17 +116,98 @@ export class WorkflowAPI {
       if(state.phase!=='created' || !(await this.plugin.richText.empty(rem.text||[],true))) throw new Error('owned_rem_edited');
       await rem.setText(text);
     }
-    if(!actualParent) {
+    if(!actualParent && parent!==null) {
       if(state.phase==='ready') throw new Error('owned_rem_moved');
       await rem.setParent(parent);
     }
     const read=await this.rem(state.id);
-    if((await read.getParentRem())?._id!==parent || !(await this.plugin.richText.equals(read.text||[],text))) throw new Error('readback_mismatch');
+    if(((await read.getParentRem())?._id??null)!==parent || !(await this.plugin.richText.equals(read.text||[],text))) throw new Error('readback_mismatch');
     if(read.backText && !(await this.plugin.richText.empty(read.backText,true))) throw new Error('unexpected_back_text');
     state.readback={id:read._id,parent_id:parent,text:read.text||[],back_text:read.backText||[]};
     state.phase='ready';
     await this.plugin.storage.setLocal(recordKey,state);
     return state;
+  }
+  async createDocument(effect:string,title:string,parentId:string|null=null) {
+    if(!/^[a-zA-Z0-9:._/-]{1,180}$/.test(effect) || !title?.trim() || title.length>300) throw new Error('document_input_invalid');
+    if(parentId) await this.rem(parentId);
+    const recordKey=key(`document:${effect}`);
+    const saved=await this.plugin.storage.getLocal<NodeState>(recordKey);
+    if(saved && (saved.parent!==parentId || JSON.stringify(saved.text)!==JSON.stringify([title]))) throw new Error('effect_input_changed');
+    const state=await this.ensureNode(recordKey,saved,parentId,[title]);
+    const rem=await this.rem(state.id!);
+    if(!(await rem.isDocument())) await rem.setIsDocument(true);
+    if(!(await (await this.rem(state.id!)).isDocument())) throw new Error('document_readback_mismatch');
+    return {document_id:state.id,parent_id:parentId,title,is_document:true,reused:!!saved};
+  }
+  async todo(category:string,software='') {
+    const target=await this.plugin.storage.getLocal<SnapshotNode>(key('targets'));
+    if(!target) throw new Error('todo_targets_not_synced');
+    const root=await this.rem(target.id);
+    if((await this.title(root))!==target.title) throw new Error('todo_root_changed');
+    if(category==='todo') return {parent_id:root._id};
+    const label=category==='shopping'?'购物清单':category==='information'?'信息清单':'';
+    const branches=target.children.filter(n=>n.title===label);
+    if(!label || branches.length!==1) throw new Error('todo_branch_unresolved');
+    const branch=await this.rem(branches[0].id);
+    if((await branch.getParentRem())?._id!==root._id || (await this.title(branch))!==label) throw new Error('todo_branch_changed');
+    if(category==='shopping') return {parent_id:branch._id};
+    if(!software.trim() || software.length>150) throw new Error('software_required');
+    const matches=[];
+    for(const child of await branch.getChildrenRem()) if((await this.title(child)).trim().toLocaleLowerCase()===software.trim().toLocaleLowerCase()) matches.push(child);
+    if(matches.length>1) throw new Error('duplicate_software_branch');
+    if(matches.length===1) return {parent_id:matches[0]._id,software:await this.title(matches[0])};
+    const recordKey=key(`software:${branch._id}:${software.trim().toLocaleLowerCase()}`);
+    const state=await this.ensureNode(recordKey,await this.plugin.storage.getLocal<NodeState>(recordKey),branch._id,[software.trim()]);
+    return {parent_id:state.id,software:software.trim()};
+  }
+  async relocate(effect:string,operation:string,parentId:string,trashId:string,stripMetadata=true) {
+    if(!/^[a-zA-Z0-9:._/-]{1,180}$/.test(effect) || !/^[a-zA-Z0-9:._/-]{1,180}$/.test(operation)) throw new Error('effect_key_invalid');
+    const recordKey=key(`publish:${effect}`);
+    const state=await this.plugin.storage.getLocal<WriteState>(recordKey);
+    if(!state?.done || !state.root_id) throw new Error('completed_owned_outline_required');
+    const source=JSON.parse(state.signature) as {parentId:string;tree:Outline;metadata:string};
+    const repairKey=key(`relocate:${operation}`);
+    const signature=JSON.stringify({effect,parentId,trashId,stripMetadata});
+    const previous=await this.plugin.storage.getLocal<{signature:string;done?:boolean}>(repairKey);
+    if(previous && previous.signature!==signature) throw new Error('effect_input_changed');
+    await this.rem(parentId);
+    const trash=await this.rem(trashId);
+    if((await this.title(trash))!=='trash' || await trash.getParentRem()) throw new Error('root_trash_required');
+    const root=await this.rem(state.root_id);
+    const oldParent=(await root.getParentRem())?._id;
+    if(!oldParent || ![state.current_parent??source.parentId,trashId,parentId].includes(oldParent)) throw new Error('owned_rem_moved');
+    const metadataId=state.format==='content-only'?undefined:state.nodes['root/0']?.id;
+    const metadataRem=metadataId?await this.rem(metadataId):undefined;
+    if(metadataRem) {
+      if(!(await this.plugin.richText.equals(metadataRem.text||[],await outlineRichText(this.plugin,source.metadata)))) throw new Error('owned_metadata_edited');
+      if((await metadataRem.getChildrenRem()).length) throw new Error('owned_metadata_edited');
+      if(![root._id,trashId].includes((await metadataRem.getParentRem())?._id??'')) throw new Error('owned_metadata_moved');
+    }
+    const readback:any[]=[];
+    const verify=async(rem:PluginRem,want:Outline,isRoot=false):Promise<void>=>{
+      if(!(await this.plugin.richText.equals(rem.text||[],await outlineRichText(this.plugin,want.text))) ||
+         (rem.backText && !(await this.plugin.richText.empty(rem.backText,true)))) throw new Error('owned_rem_edited');
+      const children=await rem.getChildrenRem();
+      const body=isRoot?children.filter(n=>n._id!==metadataId):children;
+      if(body.length!==want.children.length) throw new Error('owned_outline_children_changed');
+      readback.push({id:rem._id,parent_id:(await rem.getParentRem())?._id??null,text:rem.text||[],back_text:rem.backText||[]});
+      for(let i=0;i<body.length;i++) await verify(body[i],want.children[i]);
+    };
+    // Validate every body node before changing location or removing our metadata.
+    await verify(root,source.tree,true);
+    await this.plugin.storage.setLocal(repairKey,{signature,done:false});
+    if(stripMetadata && metadataRem && (await metadataRem.getParentRem())?._id===root._id) await metadataRem.setParent(trashId);
+    if(oldParent!==parentId) await root.setParent(parentId);
+    if((await (await this.rem(root._id)).getParentRem())?._id!==parentId) throw new Error('readback_mismatch');
+    if(stripMetadata && metadataRem && (await metadataRem.getParentRem())?._id!==trashId) throw new Error('metadata_cleanup_readback_mismatch');
+    readback.length=0;
+    await verify(await this.rem(root._id),source.tree,true);
+    state.current_parent=parentId;
+    if(stripMetadata) state.metadata_removed=true;
+    await this.plugin.storage.setLocal(recordKey,state);
+    await this.plugin.storage.setLocal(repairKey,{signature,done:true,root_id:root._id,parent_id:parentId});
+    return {status:'verified',root_id:root._id,parent_id:parentId,metadata_archived_id:stripMetadata?metadataId:undefined,reused:!!previous?.done,readback};
   }
   async publish(effect:string,parentId:string,tree:Outline,metadata:string) {
     if(!/^[a-zA-Z0-9:._/-]{1,180}$/.test(effect)) throw new Error('effect_key_invalid');
@@ -135,7 +217,7 @@ export class WorkflowAPI {
       node.children.forEach(child=>check(child,depth+1));
     };
     check(tree,0);
-    if(typeof metadata!=='string' || !metadata.trim()) throw new Error('metadata_required');
+    if(typeof metadata!=='string') throw new Error('metadata_invalid');
     await this.rem(parentId);
     const recordKey=key(`publish:${effect}`);
     const signature=JSON.stringify({parentId,tree,metadata});
@@ -143,7 +225,7 @@ export class WorkflowAPI {
     if(state && state.signature!==signature) throw new Error('effect_input_changed');
     if(state?.done) return {root_id:state.root_id,status:'verified',reused:true,
       readback:Object.values(state.nodes).map(n=>n.readback).filter(Boolean)};
-    const root={text:tree.text,children:[{text:metadata,children:[]},...tree.children]};
+    const root=tree;
     const prepared=new Map<string,RichTextInterface>();
     const prepare=async(node:Outline,address:string):Promise<void>=>{
       prepared.set(address,await outlineRichText(this.plugin,node.text));
@@ -151,7 +233,7 @@ export class WorkflowAPI {
     };
     // A parser rejection must not leave a newly created partial outline.
     await prepare(root,'root');
-    state ||= {signature,nodes:{}};
+    state ||= {signature,nodes:{},format:'content-only'};
     await this.plugin.storage.setLocal(recordKey,state);
     let count=0;
     const visit=async(node:Outline,parent:string,address:string,depth:number):Promise<string>=>{
@@ -173,10 +255,14 @@ export class WorkflowAPI {
   }
   async dispatch(method:string,args:any) {
     switch(method) {
-      case 'status': return {connected:true,protocol:1,plugin_version:'0.1.2',kb_id:(await this.plugin.kb.getCurrentKnowledgeBaseData())._id};
+      case 'status': return {connected:true,protocol:1,plugin_version:'0.1.4',kb_id:(await this.plugin.kb.getCurrentKnowledgeBaseData())._id};
       case 'template_snapshot': return this.snapshot(args.rem_id);
+      case 'targets_snapshot': return this.snapshot(args.rem_id,'targets');
       case 'search_documents': return this.search(args.queries);
+      case 'create_document': return this.createDocument(args.effect_key,args.title,args.parent_id??null);
+      case 'resolve_todo': return this.todo(args.category,args.software);
       case 'resolve_daily': return this.daily(args.date,args.branch_path);
+      case 'relocate_outline': return this.relocate(args.effect_key,args.operation_id,args.parent_id,args.trash_id,args.strip_metadata??true);
       case 'publish_outline': return this.publish(args.effect_key,args.parent_id,args.tree,args.metadata);
       default: throw new Error('unsupported_method');
     }

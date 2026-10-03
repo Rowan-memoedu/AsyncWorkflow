@@ -124,3 +124,10 @@ def test_schema_failure_is_handed_back_to_same_thread():
 def test_failed_native_turn_not_reported_completed():
     result = app._complete({'session_id':'native-thread'}, '', executor.RESULT_SCHEMA, 'failed')
     assert result['status'] == 'failed' and result['session_id'] == 'native-thread'
+
+
+def test_prompt_explains_the_native_thread_already_exists_without_rewriting_source():
+    source='新建一个 Thread，研究某项公开协议。'
+    prompt=app.prompt_for({'raw_text':source})
+    assert source in prompt
+    assert '创建步骤已完成' in prompt and '不再为承载同一任务另建 Thread' in prompt

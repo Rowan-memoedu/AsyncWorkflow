@@ -148,11 +148,13 @@ def perform(cfg, manifest, key, item):
     # Serialize document writes, but do not hold this lock while waiting for input.
     from filelock import FileLock
     with FileLock(str(cfg.root / "locks/remnote-write.lock")):
-        return asyncio.run(remnote.publish(cfg, manifest, key, item["markdown"], item["destination"], metadata, raw_text=item['raw_text']))
+        return asyncio.run(remnote.publish(cfg, manifest, key, item["markdown"], item["destination"], metadata, raw_text=item['raw_text'],item=item))
 
 
 def serve_local():
     from .command_inbox import deployments
+    from .repairs import repair_recording
     serve(analyze_recording.to_deployment(name="local", concurrency_limit=2),
           process_segment.to_deployment(name="local", concurrency_limit=2),
+          repair_recording.to_deployment(name="local", concurrency_limit=1),
           *deployments(), pause_on_shutdown=False, limit=9)
