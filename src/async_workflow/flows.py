@@ -11,7 +11,7 @@ from prefect.flow_runs import suspend_flow_run
 from prefect.input import RunInput
 from pydantic import Field
 
-from . import asr, executor, remnote, splitter
+from . import asr, executor, remnote, splitter, feedback
 from .core import Settings, Manifest, Attention, UnknownOutcome, atomic, digest, file_hash, safe_source, source_metadata, probe, eligibility, read_json
 
 
@@ -57,10 +57,12 @@ def analyze_recording(path: str, canary: bool = False):
         parts = data["segments"]
     else:
         text = asr.recognize(cfg, manifest, source)
-        outline = outline_task(text, cfg.deepseek_model, splitter.PROMPT_HASH, splitter.REFINE_REVISION)
+        feedback_plan = feedback.prepare(cfg, manifest, text)
+        text = feedback_plan['remaining_text']
+        outline = outline_task(text, cfg.deepseek_model, splitter.PROMPT_HASH, splitter.REFINE_REVISION) if text.strip() else ''
         atomic(manifest.folder / "outline.md", outline, text=True)
-        parts = split_task(text, outline, cfg.deepseek_model, digest(splitter.SYSTEM))
-        version = {"audio": recording_id, "asr":read_json(manifest.folder/'asr.json',{}).get('model',cfg.asr_model), "model":cfg.deepseek_model, "prompt":splitter.PROMPT_HASH, "refine_adapter":splitter.REFINE_REVISION, "splitter":digest(splitter.SYSTEM), "schema":1}
+        parts = split_task(text, outline, cfg.deepseek_model, digest(splitter.SYSTEM)) if text.strip() else []
+        version = {"audio": recording_id, "asr":read_json(manifest.folder/'asr.json',{}).get('model',cfg.asr_model), "model":cfg.deepseek_model, "prompt":splitter.PROMPT_HASH, "refine_adapter":splitter.REFINE_REVISION, "splitter":digest(splitter.SYSTEM), "feedback":feedback_plan['extractor_revision'], "schema":1}
         version_id = digest(json.dumps(version, sort_keys=True))
         for item in parts:
             item["key"] = digest(recording_id + ":" + data.get('source_revision','') + str(item["source_spans"]))[:24]
@@ -79,7 +81,28 @@ def analyze_recording(path: str, canary: bool = False):
             run = run_deployment("process-segment/local", parameters={"recording_id": recording_id, "index": item["index"]}, timeout=0, idempotency_key=recording_id + ":" + item["key"], as_subflow=False)
             runs[item["key"]] = str(run.id)
             manifest.update(segment_runs=runs)
+    if read_json(manifest.folder/'feedback.json',{}).get('source_spans'):
+        feedback.submit(manifest)
     return {"recording_id": recording_id, "analysis": "completed", "segment_runs": runs}
+
+
+@flow(name='process-workflow-feedback',log_prints=False,persist_result=True)
+def process_workflow_feedback(recording_id: str):
+    cfg=Settings.load()
+    store=Manifest(cfg,recording_id)
+    source=read_json(store.folder/'asr.json')
+    if not source or not source.get('text'): raise Attention('successful_source_transcript_required')
+    item=feedback.prepare(cfg,store,source['text'])
+    if not item['source_spans']: return {'status':'no_feedback'}
+    if item['cancelled']:
+        result={'status':'cancelled','kind':'workflow_feedback'}
+        store.save_effect(item['key'],result)
+        return result
+    if feedback.pending_documents(store.read(),item):
+        suspend_flow_run(key='feedback-document-dependency')
+        if feedback.pending_documents(store.read(),item): raise Attention('feedback_document_dependency_not_verified')
+    from .feedback_delivery import deliver
+    return deliver(cfg,store,item['key'],feedback.message(cfg,store,item))
 
 
 @flow(name="process-segment", log_prints=False, persist_result=True)
@@ -160,5 +183,6 @@ def serve_local():
     from .repairs import repair_recording
     serve(analyze_recording.to_deployment(name="local", concurrency_limit=2),
           process_segment.to_deployment(name="local", concurrency_limit=2),
+          process_workflow_feedback.to_deployment(name='local',concurrency_limit=1),
           repair_recording.to_deployment(name="local", concurrency_limit=1),
           *deployments(), pause_on_shutdown=False, limit=9)

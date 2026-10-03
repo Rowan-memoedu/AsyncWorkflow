@@ -116,6 +116,8 @@ def recover(cfg):
         for file in cfg.artifacts.glob("*/manifest.json"):
             data = read_json(file)
             ids = ([data["analysis_run"]] if data.get("analysis_run") else []) + list(data.get("segment_runs", {}).values())
+            if data.get('workflow_feedback_run'):
+                ids.append(data['workflow_feedback_run'])
             for run_id in ids:
                 run = client.read_flow_run(UUID(run_id))
                 if run.state.is_crashed() and run.run_count < 3:
@@ -124,6 +126,10 @@ def recover(cfg):
                 if run.state.is_paused() and run.state.state_details.pause_key == "dependency":
                     segment = next((s for s in data.get("segments", []) if data.get("segment_runs", {}).get(s["key"]) == run_id), None)
                     if segment and all(data["effects"].get(data["segments"][i]["key"], {}).get("status") == "verified" for i in segment["depends_on"]):
+                        resume_flow_run(run.id)
+                if run.state.is_paused() and run.state.state_details.pause_key == 'feedback-document-dependency':
+                    from .feedback import pending_documents
+                    if not pending_documents(data):
                         resume_flow_run(run.id)
                 if run.state.is_paused() and (run.state.state_details.pause_key or '').startswith('remnote-connection:'):
                     if remnote_ready is None:

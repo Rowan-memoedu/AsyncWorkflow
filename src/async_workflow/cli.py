@@ -40,6 +40,8 @@ def main():
     repair = commands.add_parser("repair")
     repair.add_argument("recording_id")
     repair.add_argument("--from", dest="stage", choices=("split","content","routing","publish"), required=True)
+    feedback_command = commands.add_parser('feedback')
+    feedback_command.add_argument('recording_id')
     accepted = commands.add_parser('accept-asr')
     accepted.add_argument('recording_id')
     accepted.add_argument('--receipt', type=Path, required=True)
@@ -88,6 +90,10 @@ def main():
         operation=identity(cfg,args.recording_id,args.stage)
         run=run_deployment('repair-recording/local',parameters={'recording_id':args.recording_id,'stage':args.stage,'operation_id':operation},timeout=0,idempotency_key='repair:'+args.recording_id+':'+operation,as_subflow=False)
         print(json.dumps({'run_id':str(run.id),'operation_id':operation,'stage':args.stage}))
+    elif args.command == 'feedback':
+        from .feedback import submit
+        run_id=submit(Manifest(cfg,args.recording_id))
+        print(json.dumps({'run_id':run_id,'stage':'workflow-feedback'}))
     elif args.command == 'accept-asr':
         from .transcript_revision import accept
         from prefect.deployments import run_deployment

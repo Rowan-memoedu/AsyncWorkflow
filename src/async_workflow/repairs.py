@@ -46,7 +46,13 @@ def prepare(cfg,store,stage,operation):
     old=before['segments']
     if stage=='split':
         outline=(store.folder/'outline.md').read_text(encoding='utf-8')
-        parts=splitter.split(cfg,transcript['text'],outline)
+        feedback_plan=read_json(store.folder/'feedback.json')
+        text=transcript['text']
+        if feedback_plan:
+            if feedback_plan['source_hash']!=digest(text):
+                raise Attention('feedback_source_changed_requires_review')
+            text=feedback_plan['remaining_text']
+        parts=splitter.split(cfg,text,outline) if text.strip() else []
     elif stage=='content': parts=[splitter.extract_content(cfg,p) for p in old]
     else: parts=[dict(p) for p in old]
     if any(p['kind']=='command' for p in parts): raise Attention('repair_will_not_create_or_replay_commands')

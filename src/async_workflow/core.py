@@ -97,6 +97,7 @@ class Settings(BaseModel):
     project_aliases: dict[str, str] = Field(default_factory=dict)
     command_workspace: Path = Path('D:/Workspaces/新建文件夹')
     command_project_id: str = ''
+    feedback_thread_id: str = ''
     script_actions: dict[str, dict] = Field(default_factory=dict)
     enabled: bool = False
     enabled_at: str | None = None

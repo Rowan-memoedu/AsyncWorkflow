@@ -86,3 +86,21 @@ def test_unfinished_repair_blocks_another_operation_but_allows_same_resume(setup
     assert resumed == first
     atomic(folder/'plan.json',{**first,'completed':True})
     repairs.prepare(cfg,store,'publish','next-repair')
+
+
+def test_split_repair_does_not_reintroduce_separated_feedback(setup,monkeypatch):
+    from async_workflow import feedback
+    from async_workflow.core import digest
+    cfg,store,part=setup
+    text='Existing accepted words. New separate thought.'
+    value=feedback.FeedbackPartition(spans=[{'unit':0,'quote':'New separate thought.'}],request='New separate thought.',reason='fixture')
+    extracted=feedback.partition(value,text)
+    atomic(store.folder/'feedback.json',{**extracted,'source_hash':digest(text)})
+    def split(c,body,outline):
+        assert body==extracted['remaining_text']
+        assert 'New separate thought.' not in body
+        return [dict(part)]
+    monkeypatch.setattr(splitter,'split',split)
+    _,_,plan=repairs.prepare(cfg,store,'split','feedback-aware')
+    assert plan['segments'][0]['reuses_effect']=='old'
+    assert plan['new_outline_calls']==0

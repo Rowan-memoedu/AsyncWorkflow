@@ -9,6 +9,8 @@ Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → 阿里�
 - 新命令通过官方 `openai-codex` SDK 创建持久 Thread，先保存 Thread ID，再提交并保存 Turn ID。用户直接在该 Thread 继续；桌面持有写入权时不创建替代 Thread。
 - 所有输出先区分承载操作和正文：新建/命名/定位 document 或 Thread 的说明留作操作元数据，实际正文沿用冻结提示词整理。Codex 收到整理后的任务正文，查询、执行要求及限制不会被当成容器指令移除。
 - Thread 消息只有整理后的正文；续接只有用户补充原话，不加提示前后缀。Codex 正常输出自然语言与 Markdown，不设置输出 schema；本机通过官方 Turn 状态记录运行完成、失败或中断，不能把回合完成当成业务目标已经通过验收。
+- 录音中针对工作流本身的反馈先单独提取，普通正文继续整理归档。反馈正文发送到配置绑定的同一个维护 Thread，明确要求在那里处理，真实歧义在那里讨论；引用、假设、已撤回要求不触发修改。
+- 固定维护 Thread 的投递使用 App Server 原生 `thread/queue/add`，按原生消息 ID 从队列和回合回读去重；不抢占桌面写入者。入队、收到消息和落实修改分别核验，不把投递成功当作规则已生效。
 - 新 Thread 的 `command_workspace` 固定为用户指定工作区；`command_project_id` 必须是官方 `project/list` 返回的项目 ID。用 `project/read` 核对路径、`thread/metadata/update` 绑定，并读回后才提交任务。宿主工具中的 `local-...` ID 与 App Server 项目 ID 不可混用。
 - FUN-ASR 复用现有 global-transcription CLI 的 `--provider funasr` 文件入口，不改其他应用的全局默认。成功的旧 ASR 仍复用；遗留 OSS 任务只做核对及清理，不静默重转。
 - FUN-ASR HTTP 累积快照按时间范围和严格文本前缀归并，只保留同一起点的完整后续版本；不同时间的真实重复讲话保留，重叠但不兼容的版本进入待核对。原始服务回执保持原样，修复归并时复用回执，不重新识别音频。
@@ -59,7 +61,11 @@ Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → 阿里�
 
 接回修订后同时更新分析运行引用，状态查询跟随当前运行。2026-10-03 新增两条真实录音顺序测试，共 6 个正文块完成独立 RemNote 回读：文档类型、父节点、全部正文和块前后空节点均匹配。115 项 Python 测试通过；当前安装的 Codex 运行时已完成官方 Project 只读核验。记录见 `D:/Artifacts/AsyncWorkflow/2026-10-03/latest-two-1523/测试结果.md`。本轮两条均为 RemNote 内容，没有新增 Codex 命令，因此不作为 Thread 创建和回答格式的新验收。
 
-尚未覆盖：从录音中的“以后某类内容都放到某文档”指令保存跨录音的长期路由规则。当前能执行本条录音指定的文档创建与归档；不能将这类未来要求仅因本次归档成功就视为已经生效。
+2026-10-03 已接入工作流反馈分流，并在同一个“新建文件夹”Project 建立固定维护 Thread。实际录音中的长期归档要求已由该 Thread 实现，规则保存在本地 `routing-rules.json`，按语义和原文证据匹配；当前明确去处、建文档和专用待办路由优先。规则目标按已绑定 ID 核验，冲突或失效时停止该块，不改写历史结果。
+
+使用 `python -m async_workflow.cli feedback <recording_id>` 只补跑反馈环节，读取成功 ASR，不重新转写或发布旧笔记；重复提交复用同一 Prefect run，失败时用 `retry <run_id>`。反馈指向同次新建文档时等创建结果核验，再依据真实名称补齐指代。发送后的正文被冻结；结果未知先核对原生消息，不盲目重放。普通分块修复继续排除已分流反馈。
+
+自反馈验收：146 项 Python 测试、4 个真实提取样例及 6 个长期路由样例通过；真实反馈已经固定维护 Thread 收到并落实，后台反馈任务完成，重复核对没有第二条反馈消息。原两条录音的成功转写和 6 个正文块保留。证据位于 `D:/Artifacts/AsyncWorkflow/2026-10-03/self-feedback/验收.md`；正式新增录音入口仍关闭。
 
 修复前快照和结果保存在该录音的 `repairs/<operation>/`；迁移前比对原正文、父链和已有收据，拒绝覆盖人工改动。旧元数据与被替代的本流程输出可恢复地移入根级 trash。失败后使用 `cli retry <flow_run_id>` 恢复同一修复，避免另起重复操作。`scripts/verify_readbacks.py` 可将独立读取的 RemNote 树与结果大纲、原 ASR 哈希逐项核对。
 
