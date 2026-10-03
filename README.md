@@ -46,6 +46,8 @@ Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → 阿里�
 
 独立插件地址为 `http://localhost:43141/plugin/`，0.1.5 已实际加载，已核验真实文档创建、正文、空行与重复迁移。见 [插件说明](remnote-plugin/README.md)。日记模板已显式同步为 19 个有效分支；待办目标由 `sync-targets` 单独同步。本任务后续需要重载插件时，可按用户明确授权重启 RemNote，再核验实际版本和连接。
 
+重载 RemNote 桌面主程序应以正常可见窗口启动；`WindowStyle Hidden` 仅用于后台桥接服务。2026-10-03 曾因调试时隐藏启动导致主窗口不可见，进程和插件连接仍然正常；已通过 Windows 窗口接口恢复同一实例。以后重载同时验收主窗口可见、响应正常与插件连接，不能只检查后台连接。
+
 ## 按失败环节修复
 
 使用 `python -m async_workflow.cli repair <recording_id> --from split|content|routing|publish` 提交原生 Prefect 修复 flow。`split` 复用原 ASR，仅为重新分出的内容生成大纲；`content` 保持分块和目标，只重新区分操作语句与正文，正文未变则复用；`routing` 只重新选择去处并迁移；`publish` 只修复输出格式。均不重新转写，也不自动重放命令。

@@ -5,6 +5,7 @@ Windows 本地异步录音处理：Prefect 编排，FUN-ASR 转写，冻结 prom
 - 源码只在此仓库；运行数据 D:/AppData/AsyncWorkflow，产物 D:/Artifacts/AsyncWorkflow，缓存 D:/Caches/AsyncWorkflow。
 - 运行入口保持 disabled，直到独立 RemNote 插件和小米新增录音端到端通过。服务运行不等于功能验收。
 - 不修改或连接现有 RemNote MCP。插件子包独立依赖、构建和协议；只实现本流程功能。
+- 调试重载 RemNote 桌面主程序时使用正常可见窗口启动，不使用 `Start-Process -WindowStyle Hidden`。隐藏启动只用于后台桥接服务；重载后分别验证主窗口可见且响应、插件连接正常。进程或插件存活不能代替桌面可用性验收。
 - 日记模板只在显式 sync-template 时读取。录音按 Asia/Shanghai 的录音日归档；无目标按模板语义分类，整体跨类别或无类别放其他碎片。
 - 显式文档名模糊搜索后使用首选，无候选放其他碎片；高不确定清单后置，不阻塞归档。
 - 明确要求新建 document 时创建真实文档；未说明父目录时放知识库根级，不模糊替换为无关旧文档。话题结束后不继承前一段目标。
