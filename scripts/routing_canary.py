@@ -13,6 +13,10 @@ async def check_daily():
         ('product-reflection','设备管理软件把所有按钮放在一页，开发者觉得熟悉，但新用户的工作记忆负担很大。', '其他碎片'),
         ('personal-investment','以前我为长途通勤花了很多钱，现在我愿意把省下来的预算用来买专业绘图工具，先用小额订阅试试。我对提升自己效率的投入态度变了。','私密 日记'),
         ('general-investment','按月订阅绘图软件可以降低客户的首次购买门槛，但订阅过多会使工作流程碎片化。','其他碎片'),
+        ('personal-meal','午饭吃了一碗面和一个苹果。','个人数据'),
+        ('personal-sleep','昨晚睡了七个小时，中间醒了一次。今天起床精神还好。','个人数据'),
+        ('personal-exercise','刚刚骑了半小时自行车，腿有点酸，但整个人轻松了。','个人数据'),
+        ('personal-state','今天下午比较疲惫，晚上又有精神了。','个人数据'),
         ('concrete-study','今天做微积分换元积分的练习，用了四十分钟，总算学会了这类题。','每日碎碎念'),
         ('study-cognition','我在做矩阵乘法练习时发现，题目里的颜色提示让我依赖识别而不是主动回忆，这影响了记忆提取。','认知科学相关'),
         ('subject-thought','今天学习图论的树时，我又推了一遍：树中顶点数比边数多一，删去叶子可做归纳证明。','一些注定重复的思考'),
@@ -31,6 +35,8 @@ if not args.split_only:
 source='新建一个 RemNote 文档，叫海边观察。今天海面上有两只白色的鸟。这段记录到这里结束。再记个购物想法，明天要补两支中性笔。再说个独立的想法：家务安排不用追求每个步骤都自动化。'
 parts=splitter.split(cfg,source,'# 海边观察和另外两件事情')
 assert any(p['document_action']=='create' and p['destination']=='海边观察' for p in parts)
+document=next(p for p in parts if p['document_action']=='create')
+assert '新建' not in document['content_text'] and '两只白色的鸟' in document['content_text']
 assert any(p['kind']=='shopping' and '中性笔' in p['raw_text'] for p in parts)
 last=next(p for p in parts if '家务安排' in p['raw_text'])
 assert not last['destination'] and last['document_action']=='append'
@@ -49,5 +55,12 @@ parts=splitter.split(cfg,source,'# 邮件消息草稿')
 assert parts and all(p['kind']=='information' and p['software']=='邮件' and p['route']=='remnote' for p in parts)
 results.append({'case':'software-message-draft-scope','passed':True,'segments':parts})
 print('software-message-draft-scope: passed',flush=True)
+source='建一个新的 Codex Thread，标题叫公开协议比较。请比较两种公开协议的维护成本，先查官方文档，只做调研不要修改本地文件。'
+parts=splitter.split(cfg,source,'# 公开协议比较\n- 比较维护成本\n- 查官方文档\n- 不修改文件')
+assert len(parts)==1 and parts[0]['kind']=='command'
+assert '建一个新的' not in parts[0]['content_text']
+assert '请比较两种公开协议' in parts[0]['content_text'] and '不要修改' in parts[0]['content_text']
+results.append({'case':'thread-control-and-task-body','passed':True,'segments':parts})
+print('thread-control-and-task-body: passed',flush=True)
 suffix='-split' if args.split_only else ''
 atomic(cfg.root/('routing-canary-'+routing.ROUTING_REVISION+suffix+'.json'),{'at':now(),'routing_revision':routing.ROUTING_REVISION,'results':results})

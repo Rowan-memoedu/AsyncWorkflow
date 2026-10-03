@@ -86,7 +86,7 @@ async def publish(cfg, manifest, effect_key, markdown, requested, metadata, raw_
     if saved and saved.get('status')=='verified': return saved
     if saved and saved.get('backend')!='independent-remnote-plugin':
         raise UnknownOutcome('legacy_remnote_effect_requires_readback_before_migration')
-    tree=parse_outline(markdown)
+    tree=parse_outline(markdown) if markdown.strip() else None
     async with connection(cfg) as session:
         if not saved:
             route=await routing.plan(cfg,session,call,requested,raw_text or markdown,manifest.read().get('provenance',{}),item=item)
@@ -96,17 +96,23 @@ async def publish(cfg, manifest, effect_key, markdown, requested, metadata, raw_
         if not saved.get('parent'):
             saved.update(await resolve_target(cfg,session,route,manifest.folder.name))
             manifest.save_effect(effect_key,saved)
+        if tree is None:
+            if route['type'] != 'create_document':
+                raise Attention('archival_instruction_without_content')
+            saved.update(status='verified', content_format='empty-document', verified_at=now(), metadata_log=metadata)
+            manifest.save_effect(effect_key,saved)
+            return saved
         meta=metadata+'\n录音日期：'+route['recorded_day']
         if requested: meta+='\n口述去处：'+requested
         saved['metadata_log']=meta
         saved['plugin_effect_key']=manifest.folder.name+'/'+effect_key
-        saved['content_format']='content-only'
+        saved['content_format']='content-with-separators'
         saved['status']='outcome_unknown'
         manifest.save_effect(effect_key,saved)
         result=await call(session,'publish_outline',effect_key=manifest.folder.name+'/'+effect_key,
                           parent_id=saved['parent'],tree=tree,metadata=meta)
         if result.get('status')!='verified' or not result.get('root_id'):
             raise UnknownOutcome('independent_remnote_plugin_readback_missing')
-        saved.update(status='verified',root_id=result['root_id'],verified_at=now())
+        saved.update(status='verified',root_id=result['root_id'],separators=result.get('separators'),verified_at=now())
         manifest.save_effect(effect_key,saved)
         return saved

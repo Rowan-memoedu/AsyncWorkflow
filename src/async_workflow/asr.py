@@ -1,6 +1,9 @@
 from __future__ import annotations
 import time
 import uuid
+import os
+import subprocess
+import sys
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -9,7 +12,7 @@ import alibabacloud_oss_v2 as oss
 import httpx
 
 from .auth import access, require
-from .core import Attention, UnknownOutcome, Manifest, Settings, atomic, read_json
+from .core import Attention, UnknownOutcome, Manifest, Settings, atomic, read_json, file_hash
 
 BASE = "https://dashscope.aliyuncs.com/api/v1"
 
@@ -45,7 +48,67 @@ def normalize(value: dict) -> tuple[str, list[dict]]:
     return "\n".join(s["text"] for s in sentences), sentences
 
 
+def normalize_funasr(value: dict, recording_id: str) -> dict:
+    if value.get('route') != 'funasr' or value.get('source_sha256') != recording_id:
+        raise Attention('funasr_source_or_provider_mismatch')
+    if value.get('status', {}).get('model') != 'fun-asr-realtime':
+        raise Attention('funasr_model_mismatch')
+    text, sentences = value.get('text', ''), value.get('utterances', [])
+    if not isinstance(text, str) or not text.strip() or not sentences:
+        raise Attention('funasr_empty_result')
+    for sentence in sentences:
+        start, end = sentence.get('start_ms'), sentence.get('end_ms')
+        if type(start) is not int or type(end) is not int or not 0 <= start < end or not sentence.get('text', '').strip():
+            raise Attention('funasr_invalid_final_sentence')
+    if ''.join(text.split()) != ''.join(''.join(s['text'] for s in sentences).split()):
+        raise Attention('funasr_text_sentence_mismatch')
+    return {'text':text, 'sentences':sentences, 'model':'fun-asr-realtime', 'provider':'funasr',
+            'source_sha256':recording_id, 'provider_status':value['status']}
+
+
 def recognize(cfg: Settings, manifest: Manifest, source: Path) -> str:
+    saved = read_json(manifest.folder / 'asr.json')
+    stage = manifest.read().get('asr', {})
+    # A provider change never discards an accepted transcript or a pending OSS task.
+    if stage.get('object_key') and not stage.get('cleaned'):
+        return recognize_filetrans(cfg, manifest, source)
+    if saved:
+        return saved['text']
+    if cfg.asr_provider == 'bailian':
+        return recognize_filetrans(cfg, manifest, source)
+    if file_hash(source) != manifest.folder.name:
+        raise Attention('funasr_source_changed')
+    output = manifest.folder / 'funasr'
+    raw_path = output / 'raw.json'
+    if not raw_path.exists():
+        if stage.get('submission') == 'unknown':
+            raise UnknownOutcome('funasr_submission_unknown_no_replay')
+        if not cfg.transcription_cli.is_file():
+            raise Attention('global_transcription_cli_missing')
+        manifest.update(asr={'provider':'funasr','model':'fun-asr-realtime',
+                             'submission':'unknown','output_dir':str(output),'cleaned':True})
+        temp = cfg.root / 'temp'
+        temp.mkdir(parents=True, exist_ok=True)
+        env = {**os.environ, 'TEMP':str(temp), 'TMP':str(temp), 'PYTHONIOENCODING':'utf-8'}
+        try:
+            reply = subprocess.run([sys.executable, str(cfg.transcription_cli), 'transcribe', str(source),
+                                    '--provider', 'funasr', '--output-dir', str(output)],
+                                   capture_output=True, timeout=3600, env=env)
+        except (subprocess.TimeoutExpired, OSError):
+            raise UnknownOutcome('funasr_submission_unknown_no_replay') from None
+        if reply.returncode and not raw_path.exists():
+            raise Attention('funasr_cli_failed_receipt_retained')
+    result = normalize_funasr(read_json(raw_path), manifest.folder.name)
+    if file_hash(source) != manifest.folder.name:
+        raise Attention('funasr_source_changed')
+    atomic(manifest.folder / 'asr.json', result)
+    atomic(manifest.folder / 'transcript.txt', result['text'], text=True)
+    manifest.update(asr={'provider':'funasr','model':result['model'],'submission':'completed',
+                         'output_dir':str(output),'raw_receipt':str(raw_path),'cleaned':True})
+    return result['text']
+
+
+def recognize_filetrans(cfg: Settings, manifest: Manifest, source: Path) -> str:
     result_path = manifest.folder / "asr.json"
     if result_path.exists():
         # A previous successful result still requires staged-object cleanup.
@@ -59,6 +122,7 @@ def recognize(cfg: Settings, manifest: Manifest, source: Path) -> str:
     settings.credentials_provider = oss.credentials.StaticCredentialsProvider(require(credentials, "ALIBABA_CLOUD_ACCESS_KEY_ID"), require(credentials, "ALIBABA_CLOUD_ACCESS_KEY_SECRET"), credentials.get("ALIBABA_CLOUD_SECURITY_TOKEN"))
     bucket = oss.Client(settings)
     stage = manifest.read().get("asr", {})
+    model = stage.get('model') or (cfg.asr_model if cfg.asr_provider == 'bailian' else 'qwen-audio-3.1-asr-flash-filetrans')
     if saved and stage.get("cleaned"):
         return saved["text"]
     if stage.get("submission") == "unknown" and not stage.get("task_id"):
@@ -71,7 +135,7 @@ def recognize(cfg: Settings, manifest: Manifest, source: Path) -> str:
         raise Attention("unexpected_staging_prefix")
     with httpx.Client(timeout=120, follow_redirects=False) as http:
         if not saved and not stage.get("task_id"):
-            stage.update(object_key=key, submission="not_submitted", cleaned=False)
+            stage.update(object_key=key, submission="not_submitted", cleaned=False, model=model)
             manifest.update(asr=stage)
             try:
                 bucket.put_object_from_file(oss.PutObjectRequest(bucket=cfg.oss_bucket, key=key), str(source))
@@ -82,7 +146,7 @@ def recognize(cfg: Settings, manifest: Manifest, source: Path) -> str:
             signed = bucket.presign(oss.GetObjectRequest(bucket=cfg.oss_bucket, key=key), expires=timedelta(hours=3))
             headers = {"Authorization": "Bearer " + require(credentials, "DASHSCOPE_API_KEY"), "X-DashScope-Async": "enable"}
             try:
-                reply = http.post(BASE + "/services/audio/asr/transcription", headers=headers, json={"model": cfg.asr_model, "input": {"file_urls": [signed.url]}, "parameters": {}})
+                reply = http.post(BASE + "/services/audio/asr/transcription", headers=headers, json={"model": model, "input": {"file_urls": [signed.url]}, "parameters": {}})
             except httpx.HTTPError:
                 raise UnknownOutcome("asr_submission_unknown") from None
             if reply.status_code >= 400:
@@ -128,7 +192,7 @@ def recognize(cfg: Settings, manifest: Manifest, source: Path) -> str:
             if response.status_code != 200:
                 raise Attention("asr_result_download_failed")
             text, sentences = normalize(response.json())
-            saved = {"text": text, "sentences": sentences, "model": cfg.asr_model, "task_id": stage["task_id"]}
+            saved = {"text": text, "sentences": sentences, "model": stage.get('model', 'qwen-audio-3.1-asr-flash-filetrans'), "task_id": stage["task_id"]}
             atomic(result_path, saved)
             atomic(manifest.folder / "transcript.txt", text, text=True)
         cleanup(bucket, cfg, manifest, stage)

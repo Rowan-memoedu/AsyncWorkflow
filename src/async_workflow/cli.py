@@ -39,7 +39,11 @@ def main():
     commands.add_parser("sync-targets")
     repair = commands.add_parser("repair")
     repair.add_argument("recording_id")
-    repair.add_argument("--from", dest="stage", choices=("split","routing","publish"), required=True)
+    repair.add_argument("--from", dest="stage", choices=("split","content","routing","publish"), required=True)
+    accepted = commands.add_parser('accept-asr')
+    accepted.add_argument('recording_id')
+    accepted.add_argument('--receipt', type=Path, required=True)
+    accepted.add_argument('--decision', required=True)
     retry = commands.add_parser("retry")
     retry.add_argument("run_id")
     verify = commands.add_parser("verify-effect")
@@ -84,6 +88,13 @@ def main():
         operation=identity(cfg,args.recording_id,args.stage)
         run=run_deployment('repair-recording/local',parameters={'recording_id':args.recording_id,'stage':args.stage,'operation_id':operation},timeout=0,idempotency_key='repair:'+args.recording_id+':'+operation,as_subflow=False)
         print(json.dumps({'run_id':str(run.id),'operation_id':operation,'stage':args.stage}))
+    elif args.command == 'accept-asr':
+        from .transcript_revision import accept
+        from prefect.deployments import run_deployment
+        result=accept(cfg,args.recording_id,args.receipt,args.decision)
+        run=run_deployment('analyze-recording/local',parameters={'path':result['source'],'canary':True},
+                           timeout=0,idempotency_key='accepted-asr:'+args.recording_id+':'+result['revision'],as_subflow=False)
+        print(json.dumps({**result,'run_id':str(run.id)},ensure_ascii=False))
     elif args.command in ("enable", "disable"):
         if args.command == "enable":
             from .routing import snapshot

@@ -12,7 +12,7 @@ from prefect.input import RunInput
 from pydantic import Field
 
 from . import asr, executor, remnote, splitter
-from .core import Settings, Manifest, Attention, UnknownOutcome, atomic, digest, file_hash, safe_source, source_metadata, probe, eligibility
+from .core import Settings, Manifest, Attention, UnknownOutcome, atomic, digest, file_hash, safe_source, source_metadata, probe, eligibility, read_json
 
 
 class Decision(RunInput):
@@ -60,11 +60,13 @@ def analyze_recording(path: str, canary: bool = False):
         outline = outline_task(text, cfg.deepseek_model, splitter.PROMPT_HASH, splitter.REFINE_REVISION)
         atomic(manifest.folder / "outline.md", outline, text=True)
         parts = split_task(text, outline, cfg.deepseek_model, digest(splitter.SYSTEM))
-        version = {"audio": recording_id, "asr":cfg.asr_model, "model":cfg.deepseek_model, "prompt":splitter.PROMPT_HASH, "refine_adapter":splitter.REFINE_REVISION, "splitter":digest(splitter.SYSTEM), "schema":1}
+        version = {"audio": recording_id, "asr":read_json(manifest.folder/'asr.json',{}).get('model',cfg.asr_model), "model":cfg.deepseek_model, "prompt":splitter.PROMPT_HASH, "refine_adapter":splitter.REFINE_REVISION, "splitter":digest(splitter.SYSTEM), "schema":1}
         version_id = digest(json.dumps(version, sort_keys=True))
         for item in parts:
-            item["key"] = digest(recording_id + ":" + str(item["source_spans"]))[:24]
-            item["markdown"] = outline if len(parts) == 1 else outline_task(item["raw_text"], cfg.deepseek_model, splitter.PROMPT_HASH, splitter.REFINE_REVISION)
+            item["key"] = digest(recording_id + ":" + data.get('source_revision','') + str(item["source_spans"]))[:24]
+            body = item.get('content_text', item['raw_text'])
+            item["markdown"] = (outline if len(parts) == 1 and body == text else
+                                outline_task(body, cfg.deepseek_model, splitter.PROMPT_HASH, splitter.REFINE_REVISION) if body.strip() else '')
             atomic(manifest.folder / (item["key"] + ".md"), item["markdown"], text=True)
             atomic(manifest.folder / (item["key"] + ".json"), {"recording":{"id":recording_id, "audio":str(source), "duration":duration, **provenance}, "analysis_version":version_id, "segment":{k:v for k,v in item.items() if k != "markdown"}})
         atomic(manifest.folder / "analysis-version.json", version)
@@ -118,6 +120,8 @@ def process_segment(recording_id: str, index: int):
                       +'\n脚本 ID：'+item.get('action','')+'\n本次执行日志目录：'+result['output_dir']
                       +'\n退出码：'+str(result.get('exit_code'))
                       +'\n修复工作流并验证；不要盲目重放可能已产生副作用的原动作。'}
+            for field in ('markdown','content_text','control_spans'):
+                repair.pop(field,None)
             repaired=executor.execute(cfg,manifest,key+'-repair',repair)
             result={**result,'repair_thread_id':repaired.get('session_id'),'repair_status':repaired['status']}
             manifest.save_effect(key,result)

@@ -1,18 +1,22 @@
 # AsyncWorkflow
 
-Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → Qwen 转写 → 原结构化提示词 / DeepSeek → 语义分块 → 独立 RemNote 插件、官方 Codex App Server 或已配置 CLI。
+Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → 阿里云 FUN-ASR → 原结构化提示词 / DeepSeek → 语义分块与操作指令分离 → 独立 RemNote 插件、官方 Codex App Server 或已配置 CLI。
 
-主体代码和本机服务已搭建，正式录音入口 `enabled=false`。App Server 创建的真实 Thread 已通过桌面列表、跨进程续接和桌面继续交互验收。独立 RemNote 插件 0.1.4 已实际加载，文档创建、正文归档、受保护迁移与幂等回归通过；真实录音的购物清单、软件消息归档及学习日志边界均已回读。公开混合录音、断线等待、worker 重启自动恢复和跨日归档已通过；小米登录、历史基线与下载完整性已核验。一条真实短录音出现 ASR 语义不稳定，已停止其输出并保留复核结果等待确认；新增录音自动入口尚未开放。
+主体代码和本机服务已搭建，正式录音入口 `enabled=false`。独立 RemNote 插件 0.1.5 已加载，14 个真实正文块的内容、归档位置和上下空行完成独立回读。用户确认的 FUN-ASR 复核结果已接回下游；对应命令经结构化后进入当前“新建文件夹”Project，真实 Thread 完成首轮查询，原生列表已验证项目归属。此前的桌面续接、断线恢复、跨日归档和小米下载完整性验收仍保留。新增录音自动入口尚未开放。
 
 ## 边界
 
 - 新命令通过官方 `openai-codex` SDK 创建持久 Thread，先保存 Thread ID，再提交并保存 Turn ID。用户直接在该 Thread 继续；桌面持有写入权时不创建替代 Thread。
+- 所有输出先区分承载操作和正文：新建/命名/定位 document 或 Thread 的说明留作操作元数据，实际正文沿用冻结提示词整理。Codex 收到整理后的任务正文，查询、执行要求及限制不会被当成容器指令移除。
+- 新 Thread 的 `command_workspace` 固定为用户指定工作区；`command_project_id` 必须是官方 `project/list` 返回的项目 ID。用 `project/read` 核对路径、`thread/metadata/update` 绑定，并读回后才提交任务。宿主工具中的 `local-...` ID 与 App Server 项目 ID 不可混用。
+- FUN-ASR 复用现有 global-transcription CLI 的 `--provider funasr` 文件入口，不改其他应用的全局默认。成功的旧 ASR 仍复用；遗留 OSS 任务只做核对及清理，不静默重转。
 - RemNote 使用 `remnote-plugin` 独立子包和 43141 回环服务，不修改或连接现有 RemNote MCP。录音归档接口包括显式快照、文档搜索/创建、日期与待办分支解析、幂等写入和受保护的旧输出迁移。
 - “日记模板”显式同步为本地快照；分类时不实时读取模板。口述目标模糊匹配后使用首选；无目标按录音日的模板分支分类；跨类整体或无可用候选进入“其他碎片”。
 - 命令依据原录音的语义判断，不依赖固定触发词；引用、否定和撤回不构成执行授权。需要决定的命令在自己的 Thread 中讨论。
 - 保存原始输入和副作用记录。未知提交先核对，不盲目重试；重新分析不自动重放已执行动作。
 - 明确新建文档时创建真实 document；未指定父目录时为根级。信息清单按软件归档，包括拟发消息和回复草稿；购物清单收购物记录，其余记录型杂事待办进入待办清单根级。保存消息草稿不构成对外发送授权。
-- 学习日志只收明确要求或具体学科学习；个人经历与投入取舍归私密日记，一般观点及工具反思归其他碎片。RemNote 仅保存结构化原文，元数据只留日志。
+- 学习日志只收明确要求或具体学科学习；个人经历与投入取舍归私密日记，一般观点及工具反思归其他碎片。饮食、睡眠、状态、运动时长与身体感受等当天事实归入私密日记下的个人数据。RemNote 仅保存结构化正文，元数据只留日志。
+- 每个整体正文块上下各有一个归本插件管理的同级空节点；创建、迁移和重试均核对相邻顺序，复用同一对空节点。用户改写空节点后不覆盖；经用户确认已删除的旧输出保留删除状态。
 - RemNote 连接中断时使用 Prefect 原生持久暂停；插件实际恢复后自动续接同一运行和效果标识。人工待答与无法核对的旧写入结果不自动放行。
 - 历史云端 ID 和本地哈希基线在扫描计数前排除，避免大量历史文件耗尽新录音批次；历史云端文件无需每轮重新读取音频字节。
 
@@ -40,14 +44,16 @@ Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → Qwen 转
 
 ## 下一步验收
 
-独立插件地址为 `http://localhost:43141/plugin/`，0.1.4 已实际加载，并通过真实文档创建、正文写入、重复请求与原 ID 迁移回读。见 [插件说明](remnote-plugin/README.md)。日记模板已显式同步为 19 个有效分支；待办目标由 `sync-targets` 单独同步。本任务后续需要重载插件时，可按用户明确授权重启 RemNote，再核验实际版本和连接。
+独立插件地址为 `http://localhost:43141/plugin/`，0.1.5 已实际加载，已核验真实文档创建、正文、空行与重复迁移。见 [插件说明](remnote-plugin/README.md)。日记模板已显式同步为 19 个有效分支；待办目标由 `sync-targets` 单独同步。本任务后续需要重载插件时，可按用户明确授权重启 RemNote，再核验实际版本和连接。
 
 ## 按失败环节修复
 
-使用 `python -m async_workflow.cli repair <recording_id> --from split|routing|publish` 提交原生 Prefect 修复 flow。`split` 复用原 ASR，仅为重新分出的内容生成大纲；`routing` 保留已接受正文，只重新选择去处并迁移；`publish` 保持原目标，仅修复正文输出格式。三个入口都不重新转写，也不自动重放命令。
+使用 `python -m async_workflow.cli repair <recording_id> --from split|content|routing|publish` 提交原生 Prefect 修复 flow。`split` 复用原 ASR，仅为重新分出的内容生成大纲；`content` 保持分块和目标，只重新区分操作语句与正文，正文未变则复用；`routing` 只重新选择去处并迁移；`publish` 只修复输出格式。均不重新转写，也不自动重放命令。
+
+已明确确认另一份 FUN-ASR 转写时，用 `accept-asr <recording_id> --receipt <raw.json> --decision <用户的确认>` 接回下游。先核对音频哈希、旧 flow 均已终止、旧输出已归档且没有已启动的 Thread；保留原转写和旧效果。它导入现有结果，不重新调用 ASR；带修订身份提交原生 Prefect 分析，重复确认不重复执行。
 
 修复前快照和结果保存在该录音的 `repairs/<operation>/`；迁移前比对原正文、父链和已有收据，拒绝覆盖人工改动。旧元数据与被替代的本流程输出可恢复地移入根级 trash。失败后使用 `cli retry <flow_run_id>` 恢复同一修复，避免另起重复操作。`scripts/verify_readbacks.py` 可将独立读取的 RemNote 树与结果大纲、原 ASR 哈希逐项核对。
 
 小米账户已扫码成功并核验云端访问；按明确账户 ID 绑定，保留旧失效账户。五分钟音频下载任务已启动，440 条历史录音基线已保存，全部原名、字节数与 SHA-1 一致；该下载器的录音路径使用全量元数据枚举及已有文件跳过，不能把相册的游标增量能力推广到录音。已按真实样本补齐月-日-年文件名格式。公开混合录音与断线恢复通过后，仍需一条真实新增手机录音验证上传到归档的完整链路，正式入口继续关闭。目标不确定的低优先级 RemNote 清单后置，明确指向既有 Thread 名称的完整解析尚未完成。
 
-完整 Spec 和当前验收分别位于 `D:/Artifacts/AsyncWorkflow/2026-10-02/02-架构与规格草案.md`、`05-部署与验收.md`、`06-AppServer-实测.md`。
+完整 Spec 位于 `D:/Artifacts/AsyncWorkflow/2026-10-02/02-架构与规格草案.md`。最新修订验收为 `D:/Artifacts/AsyncWorkflow/2026-10-03/revision-2/修订验收.md`；此前部署和 App Server 验收保留在 `2026-10-02/05-部署与验收.md`、`06-AppServer-实测.md`。

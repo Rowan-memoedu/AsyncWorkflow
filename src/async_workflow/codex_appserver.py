@@ -12,6 +12,7 @@ from filelock import FileLock
 from jsonschema import validate
 from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
 from openai_codex.client import CodexClient
+from pydantic import BaseModel, ConfigDict
 
 from .core import Attention, UnknownOutcome, atomic, digest, now, read_json
 
@@ -21,7 +22,37 @@ def sdk_config(cfg, cwd: Path) -> CodexConfig:
     # explicit binary is the runtime whose Desktop interoperability was tested.
     return CodexConfig(codex_bin=str(cfg.codex), cwd=str(cwd),
                        client_name="async_workflow", client_title="Async Workflow",
-                       experimental_api=False)
+                       experimental_api=True)
+
+
+class ProtocolObject(BaseModel):
+    model_config = ConfigDict(extra='allow')
+
+
+def check_project(cfg,cwd):
+    if not cfg.command_project_id: raise Attention('command_project_not_bound')
+    with CodexClient(sdk_config(cfg,cwd)) as client:
+        client.initialize()
+        project=client.request('project/read',{'projectId':cfg.command_project_id},response_model=ProtocolObject).model_dump()['project']
+    if not any(Path(root['path']).resolve()==cwd.resolve() for root in project['roots']):
+        raise Attention('command_project_workspace_mismatch')
+
+
+def bind_project(cfg, thread_id, cwd):
+    """Use the current official protocol absent from the older SDK's convenience methods."""
+    if not cfg.command_project_id:
+        raise Attention('command_project_not_bound')
+    with CodexClient(sdk_config(cfg,cwd)) as client:
+        client.initialize()
+        project=client.request('project/read',{'projectId':cfg.command_project_id},response_model=ProtocolObject).model_dump()['project']
+        if not any(Path(root['path']).resolve()==cwd.resolve() for root in project['roots']):
+            raise Attention('command_project_workspace_mismatch')
+        client.request('thread/metadata/update',
+            {'threadId':thread_id,'projectId':cfg.command_project_id},response_model=ProtocolObject).model_dump()
+        observed=client.thread_read(thread_id,include_turns=False).model_dump(mode='json',by_alias=True)['thread']
+    if observed.get('projectId')!=cfg.command_project_id or Path(observed['cwd']).resolve()!=cwd.resolve():
+        raise Attention('native_thread_project_readback_mismatch')
+    return {'project_id':observed['projectId'],'cwd':observed['cwd'],'verified_at':now()}
 
 
 def prompt_for(item: dict) -> str:
@@ -33,10 +64,30 @@ def prompt_for(item: dict) -> str:
         "执行下面这条来自用户录音、已经识别为执行意图的命令。遵守目标项目 AGENTS.md 和现有授权。"
         "录音中的引用、假设及转述不产生额外授权。遇到需要用户作出决定或明确批准的具体动作，"
         "在此 Thread 说明未决问题并返回 needs_input，用户会直接在此 Thread 继续。"
-        "如实报告结果、证据和未完成项。\n\n原始命令：\n" + item["raw_text"]
+        "如实报告结果、证据和未完成项。\n\n用户任务正文（沿用用户的结构化整理方式）：\n" + item["markdown"]
+        + ("\n本任务要操作的项目路径：" + item['target_project_path'] if item.get('target_project_path') else '')
         + ("\n用户对本次动作的补充：" + item["human_answer"] if item.get("human_answer") else "")
         + ("\n当前工作目录只是通用任务容器；口述项目尚未绑定。请先定位真实项目，无法唯一确定时在此 Thread 询问用户，不在通用目录冒建项目。" if item.get('project_unresolved') or (item.get('project_required') and not item.get('destination')) else '')
     )
+
+
+def prepare_input(cfg, item, folder):
+    from . import splitter
+    from .markdown import parse_outline
+    signature=digest(item['raw_text'])
+    path=folder/'input.json'
+    saved=read_json(path)
+    if saved:
+        if saved['source_hash']!=signature: raise Attention('command_input_changed')
+        return {**item,**saved['body']}
+    body=item if 'content_text' in item else splitter.extract_content(cfg,{**item,'kind':'command'})
+    if not body['content_text'].strip(): raise Attention('thread_task_body_missing')
+    reusable=body.get('markdown') if ('content_text' in item or body['content_text']==item['raw_text']) else None
+    markdown=reusable or splitter.refine(cfg,body['content_text'])
+    parse_outline(markdown)
+    prepared={'content_text':body['content_text'],'control_spans':body.get('control_spans',[]),'markdown':markdown}
+    atomic(path,{'source_hash':signature,'at':now(),'raw_text':item['raw_text'],'body':prepared})
+    return {**item,**prepared}
 
 
 def _complete(saved, text, schema, native_status="completed"):
@@ -94,7 +145,11 @@ def execute(cfg, manifest, key: str, item: dict, cwd: Path, schema: dict):
         if following:
             folder = folder / ("followup-" + digest(saved["output_dir"] + item["followup"])[:16])
         folder.mkdir(parents=True, exist_ok=True)
+        if not following:
+            item=prepare_input(cfg,item,folder)
         session_id = saved.get("session_id") if saved else None
+        if not session_id:
+            check_project(cfg,cwd)
         state = {"status": "outcome_unknown", "phase": "thread_start_pending", "backend": "app-server",
                  "kind": "command", "effect_key": key, "cwd": str(cwd), "output_dir": str(folder),
                  "prepared_at": now(), **({"session_id": session_id} if session_id else {})}
@@ -108,8 +163,11 @@ def execute(cfg, manifest, key: str, item: dict, cwd: Path, schema: dict):
                                                 approval_mode=ApprovalMode.deny_all, service_name="async_workflow")
                 state.update(session_id=thread.id, thread_id=thread.id, phase="thread_created")
                 manifest.save_effect(key, state)  # ID is durable BEFORE submission.
+                if not following:
+                    state['project_assignment']=bind_project(cfg,thread.id,cwd)
+                    manifest.save_effect(key,state)
                 if not session_id:
-                    title = item.get("title") or item["raw_text"].splitlines()[0][:60]
+                    title = item.get("title") or item['markdown'].splitlines()[0].lstrip('# ').strip()[:60]
                     thread.set_name(title)
                 state.update(phase="turn_start_pending")
                 manifest.save_effect(key, state)

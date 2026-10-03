@@ -39,6 +39,15 @@ def main():
         result = {'key': segment['key'], 'root_id': effect['root_id'],
                   'parent_id': effect['parent'], 'parent_title': observed.get('parentTitle'),
                   'outline_nodes_matched': count, 'content_only': True}
+        if effect.get('separators'):
+            pair=effect['separators']
+            siblings=read_json(args.snapshots/('siblings-'+effect['parent']+'.json'))['children']
+            ids=[node['remId'] for node in siblings]
+            index=ids.index(effect['root_id'])
+            assert index>0 and index+1<len(ids)
+            assert ids[index-1]==pair['before_id'] and ids[index+1]==pair['after_id']
+            assert siblings[index-1]['title']==siblings[index+1]['title']==''
+            result['blank_siblings_verified']=True
         if effect.get('created_document_id'):
             document = read_json(args.snapshots / (effect['created_document_id'] + '.json'))
             assert document['remType'] == 'document'
@@ -61,7 +70,7 @@ def main():
             if old is None:
                 old = next((x for x in baseline['outlines'].values()
                             if x['raw'] == segment['raw_text']), None)
-            if old:
+            if old and not segment.get('control_spans'):
                 assert old['markdown'] == segment['markdown']
                 assert old['root_id'] == manifest['effects'][segment['key']]['root_id']
                 unchanged += 1

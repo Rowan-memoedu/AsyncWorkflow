@@ -5,7 +5,8 @@ type Outline = {text:string; children:Outline[]};
 type NodeState = {id?:string; phase:'creating'|'created'|'ready'; parent:string|null; text:RichTextInterface;
   readback?:{id:string;parent_id:string|null;text:RichTextInterface;back_text:RichTextInterface}};
 type WriteState = {signature:string; done?:boolean; root_id?:string; nodes:Record<string,NodeState>;
-  format?:'content-only'; current_parent?:string; metadata_removed?:boolean};
+  format?:'content-only'; current_parent?:string; metadata_removed?:boolean;
+  separators?:Record<'before'|'after',NodeState>};
 type SnapshotNode = {id:string; title:string; children:SnapshotNode[]};
 const key = (value:string) => `async-workflow-v1:${value}`;
 
@@ -118,7 +119,7 @@ export class WorkflowAPI {
     }
     if(!actualParent && parent!==null) {
       if(state.phase==='ready') throw new Error('owned_rem_moved');
-      await rem.setParent(parent);
+      await rem.setParent(parent,(await (await this.rem(parent)).getChildrenRem()).length);
     }
     const read=await this.rem(state.id);
     if(((await read.getParentRem())?._id??null)!==parent || !(await this.plugin.richText.equals(read.text||[],text))) throw new Error('readback_mismatch');
@@ -127,6 +128,44 @@ export class WorkflowAPI {
     state.phase='ready';
     await this.plugin.storage.setLocal(recordKey,state);
     return state;
+  }
+  private async checkSeparators(state:WriteState,allowedParents:string[]) {
+    for(const saved of Object.values(state.separators??{})) {
+      if(!saved.id) throw new Error('create_unknown_no_replay');
+      const rem=await this.rem(saved.id);
+      if(!(await this.plugin.richText.empty(rem.text||[],true)) ||
+         (rem.backText && !(await this.plugin.richText.empty(rem.backText,true))) ||
+         (await rem.getChildrenRem()).length) throw new Error('owned_separator_edited');
+      if(!allowedParents.includes((await rem.getParentRem())?._id??'')) throw new Error('owned_separator_moved');
+    }
+  }
+  private async surround(effect:string,state:WriteState,parentId:string) {
+    const recordKey=key(`publish:${effect}`);
+    await this.checkSeparators(state,[state.current_parent??JSON.parse(state.signature).parentId,parentId]);
+    for(const side of ['before','after'] as const) {
+      const nodeKey=key(`publish-separator:${effect}:${side}`);
+      let saved=state.separators?.[side]??await this.plugin.storage.getLocal<NodeState>(nodeKey);
+      if(!state.separators?.[side]) saved=await this.ensureNode(nodeKey,saved,parentId,[]);
+      state.separators ||= {} as Record<'before'|'after',NodeState>;
+      state.separators[side]=saved!;
+      await this.plugin.storage.setLocal(recordKey,state);
+    }
+    const ids=[state.separators!.before.id!,state.root_id!,state.separators!.after.id!];
+    const parent=await this.rem(parentId);
+    const children=(await parent.getChildrenRem()).map(n=>n._id);
+    const rootIndex=children.indexOf(state.root_id!);
+    if(rootIndex<0) throw new Error('owned_rem_moved');
+    if(children[rootIndex-1]!==ids[0] || children[rootIndex+1]!==ids[2]) {
+      const position=children.slice(0,rootIndex).filter(id=>!ids.includes(id)).length;
+      await this.plugin.rem.moveRems(ids,parentId,position);
+    }
+    const observed=(await (await this.rem(parentId)).getChildrenRem()).map(n=>n._id);
+    const start=observed.indexOf(ids[0]);
+    if(start<0 || JSON.stringify(observed.slice(start,start+3))!==JSON.stringify(ids)) throw new Error('separator_order_readback_mismatch');
+    await this.checkSeparators(state,[parentId]);
+    for(const side of ['before','after'] as const) state.separators![side].parent=parentId;
+    await this.plugin.storage.setLocal(recordKey,state);
+    return {before_id:ids[0],after_id:ids[2],parent_id:parentId,verified:true};
   }
   async createDocument(effect:string,title:string,parentId:string|null=null) {
     if(!/^[a-zA-Z0-9:._/-]{1,180}$/.test(effect) || !title?.trim() || title.length>300) throw new Error('document_input_invalid');
@@ -196,6 +235,7 @@ export class WorkflowAPI {
     };
     // Validate every body node before changing location or removing our metadata.
     await verify(root,source.tree,true);
+    await this.checkSeparators(state,[state.current_parent??source.parentId,parentId]);
     await this.plugin.storage.setLocal(repairKey,{signature,done:false});
     if(stripMetadata && metadataRem && (await metadataRem.getParentRem())?._id===root._id) await metadataRem.setParent(trashId);
     if(oldParent!==parentId) await root.setParent(parentId);
@@ -203,11 +243,12 @@ export class WorkflowAPI {
     if(stripMetadata && metadataRem && (await metadataRem.getParentRem())?._id!==trashId) throw new Error('metadata_cleanup_readback_mismatch');
     readback.length=0;
     await verify(await this.rem(root._id),source.tree,true);
+    const separators=await this.surround(effect,state,parentId);
     state.current_parent=parentId;
     if(stripMetadata) state.metadata_removed=true;
     await this.plugin.storage.setLocal(recordKey,state);
     await this.plugin.storage.setLocal(repairKey,{signature,done:true,root_id:root._id,parent_id:parentId});
-    return {status:'verified',root_id:root._id,parent_id:parentId,metadata_archived_id:stripMetadata?metadataId:undefined,reused:!!previous?.done,readback};
+    return {status:'verified',root_id:root._id,parent_id:parentId,separators,metadata_archived_id:stripMetadata?metadataId:undefined,reused:!!previous?.done,readback};
   }
   async publish(effect:string,parentId:string,tree:Outline,metadata:string) {
     if(!/^[a-zA-Z0-9:._/-]{1,180}$/.test(effect)) throw new Error('effect_key_invalid');
@@ -224,6 +265,7 @@ export class WorkflowAPI {
     let state=await this.plugin.storage.getLocal<WriteState>(recordKey);
     if(state && state.signature!==signature) throw new Error('effect_input_changed');
     if(state?.done) return {root_id:state.root_id,status:'verified',reused:true,
+      separators:await this.surround(effect,state,state.current_parent??parentId),
       readback:Object.values(state.nodes).map(n=>n.readback).filter(Boolean)};
     const root=tree;
     const prepared=new Map<string,RichTextInterface>();
@@ -248,14 +290,15 @@ export class WorkflowAPI {
       return owned.id!;
     };
     state.root_id=await visit(root,parentId,'root',0);
+    const separators=await this.surround(effect,state,parentId);
     state.done=true;
     await this.plugin.storage.setLocal(recordKey,state);
-    return {root_id:state.root_id,status:'verified',node_count:count,
+    return {root_id:state.root_id,status:'verified',node_count:count,separators,
       readback:Object.values(state.nodes).map(n=>n.readback).filter(Boolean)};
   }
   async dispatch(method:string,args:any) {
     switch(method) {
-      case 'status': return {connected:true,protocol:1,plugin_version:'0.1.4',kb_id:(await this.plugin.kb.getCurrentKnowledgeBaseData())._id};
+      case 'status': return {connected:true,protocol:1,plugin_version:'0.1.5',kb_id:(await this.plugin.kb.getCurrentKnowledgeBaseData())._id};
       case 'template_snapshot': return this.snapshot(args.rem_id);
       case 'targets_snapshot': return this.snapshot(args.rem_id,'targets');
       case 'search_documents': return this.search(args.queries);

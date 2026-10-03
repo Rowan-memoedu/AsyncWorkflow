@@ -4,11 +4,18 @@ import {WorkflowAPI} from '../src/api';
 function fixture() {
   const values=new Map<string,any>(), nodes=new Map<string,any>();
   let creates=0, loseText=false, loseCreate=false, loseMove=false, dailyCalls=0;
+  function reorder(ids:string[],parent:string,position:number) {
+    const siblings=[...nodes.values()].filter(n=>n.parent===parent&&!ids.includes(n._id)).sort((a,b)=>a.order-b.order);
+    const moved=ids.map(id=>nodes.get(id));
+    siblings.splice(position,0,...moved);
+    siblings.forEach((n,i)=>{n.parent=parent;n.order=i;});
+    if(loseMove){loseMove=false;throw new Error('lost_move_reply');}
+  }
   function node(id:string,text:any[]=[],parent?:string) {
-    const value={_id:id,text,parent,isDoc:false,
+    const value={_id:id,text,parent,isDoc:false,order:[...nodes.values()].filter(n=>n.parent===parent).length,
       getParentRem:async()=>nodes.get(value.parent),
-      getChildrenRem:async()=>[...nodes.values()].filter(n=>n.parent===id),
-      setParent:async(p:string)=>{value.parent=p;if(loseMove){loseMove=false;throw new Error('lost_move_reply');}},
+      getChildrenRem:async()=>[...nodes.values()].filter(n=>n.parent===id).sort((a,b)=>a.order-b.order),
+      setParent:async(p:string,position=0)=>reorder([id],p,position),
       setText:async(t:any)=>{value.text=t;if(loseText){loseText=false;throw new Error('lost_text_reply');}},
       isDocument:async()=>value.isDoc,setIsDocument:async(v:boolean)=>{value.isDoc=v;}};
     nodes.set(id,value);return value;
@@ -17,7 +24,7 @@ function fixture() {
   const plugin:any={
     storage:{getLocal:async(k:string)=>values.has(k)?structuredClone(values.get(k)):undefined,
       setLocal:async(k:string,v:any)=>{values.set(k,structuredClone(v));}},
-    rem:{findOne:async(id:string)=>nodes.get(id),createRem:async()=>{
+    rem:{moveRems:async(ids:string[],p:string,position:number)=>reorder(ids,p,position),findOne:async(id:string)=>nodes.get(id),createRem:async()=>{
       const result=node('owned-'+(++creates));if(loseCreate){loseCreate=false;throw new Error('lost_create_reply');}return result;}},
     richText:{normalize:async(t:any)=>t,parseFromMarkdown:async(t:string)=>[t],toString:async(t:string[])=>t.join(''),
       equals:async(a:any,b:any)=>JSON.stringify(a)===JSON.stringify(b),empty:async(a:any)=>a.length===0},
@@ -33,14 +40,14 @@ describe('owned write recovery',()=>{
   it('reuses a completed effect after its response is lost',async()=>{
     const f=fixture(); const first=await f.api.publish('record/part','parent',outline,'source');
     const second=await f.api.publish('record/part','parent',outline,'source');
-    expect(second.root_id).toBe(first.root_id);expect(f.counts().creates).toBe(3);
+    expect(second.root_id).toBe(first.root_id);expect(f.counts().creates).toBe(5);
     expect(f.nodes.get(first.root_id).text).toEqual([outline.text]);
   });
   it('recovers a lost setText response without recreating the rem',async()=>{
     const f=fixture();f.loseText();
     await expect(f.api.publish('record/part','parent',outline,'source')).rejects.toThrow('lost_text_reply');
     expect((await f.api.publish('record/part','parent',outline,'source')).status).toBe('verified');
-    expect(f.counts().creates).toBe(3);
+    expect(f.counts().creates).toBe(5);
   });
   it('never overwrites an edit after interruption',async()=>{
     const f=fixture();f.loseText();
@@ -124,7 +131,7 @@ describe('stage correction of owned results',()=>{
     const f=await legacyFixture();f.loseMove();
     await expect(f.api.relocate('legacy','repair-2','destination','trash')).rejects.toThrow('lost_move_reply');
     expect((await f.api.relocate('legacy','repair-2','destination','trash')).status).toBe('verified');
-    expect(f.counts().creates).toBe(3);
+    expect(f.counts().creates).toBe(5);
   });
   it('refuses to change a result with user-edited body text',async()=>{
     const f=await legacyFixture();f.nodes.get('owned-2').text=['User changed the note'];
@@ -135,6 +142,29 @@ describe('stage correction of owned results',()=>{
     const f=await legacyFixture();f.node('user-child',['My annotation'],'legacy-meta');
     await expect(f.api.relocate('legacy','repair-4','destination','trash')).rejects.toThrow('owned_metadata_edited');
     expect(f.nodes.get('legacy-meta').parent).toBe(f.rootId);
+  });
+});
+describe('blank siblings around whole blocks',()=>{
+  it('keeps two independent blocks and their pairs ordered with no duplicates on retry',async()=>{
+    const f=fixture();f.node('earlier',['Earlier user note'],'parent');
+    const a=await f.api.publish('a','parent',outline,'log');
+    const b=await f.api.publish('b','parent',{text:'Another block',children:[]},'log');
+    await f.api.publish('a','parent',outline,'log');
+    expect((await f.parent.getChildrenRem()).map((n:any)=>n._id)).toEqual([
+      'earlier',a.separators.before_id,a.root_id,a.separators.after_id,b.separators.before_id,b.root_id,b.separators.after_id]);
+    expect(f.nodes.get(a.separators.before_id).text).toEqual([]);
+    expect(f.nodes.get(a.separators.after_id).text).toEqual([]);
+    expect(f.counts().creates).toBe(8);
+  });
+  it('moves the same owned separator pair with its block and protects edits to a blank',async()=>{
+    const f=fixture();f.node('trash',['trash']);f.node('target',['Other']);
+    const a=await f.api.publish('a','parent',outline,'log');
+    const moved=await f.api.relocate('a','move','target','trash');
+    expect(moved.separators.before_id).toBe(a.separators.before_id);
+    expect((await f.parent.getChildrenRem()).length).toBe(0);
+    f.nodes.get(a.separators.after_id).text=['My new note'];
+    await expect(f.api.relocate('a','back','parent','trash')).rejects.toThrow('owned_separator_edited');
+    expect(f.nodes.get(a.root_id).parent).toBe('target');
   });
 });
 describe('template and recording day',()=>{

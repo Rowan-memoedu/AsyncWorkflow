@@ -9,11 +9,15 @@ from async_workflow.core import Settings, Manifest, UnknownOutcome, atomic
 
 
 @pytest.fixture
-def setup(tmp_path):
+def setup(tmp_path,monkeypatch):
     cfg = Settings(root=tmp_path/'state', inbox=tmp_path/'audio', artifacts=tmp_path/'out',
-                   ffprobe=Path('ffprobe'), codex=Path('codex'), project_aliases={'': str(tmp_path)})
+                   ffprobe=Path('ffprobe'), codex=Path('codex'), project_aliases={'': str(tmp_path)},command_workspace=tmp_path,
+                   command_project_id='project-fixture')
+    monkeypatch.setattr(app,'check_project',lambda *a:None)
+    monkeypatch.setattr(app,'bind_project',lambda c,t,w:{'project_id':c.command_project_id,'cwd':str(w)})
     cfg.prepare()
-    return cfg, Manifest(cfg, '1'*64), {'route':'codex', 'destination':'', 'raw_text':'calculate', 'title':'Canary'}
+    return cfg, Manifest(cfg, '1'*64), {'route':'codex', 'destination':'', 'raw_text':'calculate',
+                                      'content_text':'calculate','markdown':'# Calculate','title':'Canary'}
 
 
 class FakeCodex:
@@ -52,6 +56,8 @@ def test_new_commands_use_sdk_and_preserve_ids_before_submission(setup, monkeypa
     monkeypatch.setattr(executor.subprocess, 'Popen', lambda *a, **k:pytest.fail('Exec launched'))
     result = executor.execute(cfg, store, 'key', item)
     assert result['backend'] == 'app-server'
+    assert result['cwd'] == str(cfg.command_workspace)
+    assert result['project_assignment']['project_id']==cfg.command_project_id
     assert result['session_id'] == 'native-thread' and result['turn_id'] == 'native-turn'
     assert result['status'] == 'completed_unverified'
     assert executor.execute(cfg, store, 'key', item) == store.effect('key')
@@ -126,8 +132,42 @@ def test_failed_native_turn_not_reported_completed():
     assert result['status'] == 'failed' and result['session_id'] == 'native-thread'
 
 
-def test_prompt_explains_the_native_thread_already_exists_without_rewriting_source():
+def test_prompt_uses_structured_task_without_container_instruction():
     source='新建一个 Thread，研究某项公开协议。'
-    prompt=app.prompt_for({'raw_text':source})
-    assert source in prompt
+    prompt=app.prompt_for({'raw_text':source,'markdown':'# 研究公开协议\n- 比较维护成本'})
+    assert source not in prompt and '# 研究公开协议\n- 比较维护成本' in prompt
     assert '创建步骤已完成' in prompt and '不再为承载同一任务另建 Thread' in prompt
+
+
+def test_direct_commands_are_partitioned_and_structured_once(setup,monkeypatch):
+    from async_workflow import splitter
+    cfg,store,_=setup
+    calls=[]
+    monkeypatch.setattr(splitter,'extract_content',lambda c,p:{**p,'content_text':'Compare protocols.','control_spans':[[0,15]]})
+    monkeypatch.setattr(splitter,'refine',lambda c,s:calls.append(s) or '# Compare protocols')
+    item={'raw_text':'Create a thread. Compare protocols.'}
+    first=app.prepare_input(cfg,item,store.folder/'command')
+    assert app.prepare_input(cfg,item,store.folder/'command')==first
+    assert calls==['Compare protocols.']
+
+
+def test_project_failure_retains_thread_and_does_not_submit_outside_project(setup,monkeypatch):
+    cfg,store,item=setup
+    sdk=FakeCodex(store)
+    monkeypatch.setattr(app,'Codex',sdk)
+    def failure(*a): raise RuntimeError('project assignment failed')
+    monkeypatch.setattr(app,'bind_project',failure)
+    with pytest.raises(UnknownOutcome): executor.execute(cfg,store,'key',item)
+    assert store.effect('key')['phase']=='thread_created'
+    assert store.effect('key')['session_id']=='native-thread'
+    assert sdk.created==1 and sdk.submitted==0
+
+
+def test_unknown_project_fails_before_thread_creation(setup,monkeypatch):
+    cfg,store,item=setup
+    sdk=FakeCodex(store)
+    monkeypatch.setattr(app,'Codex',sdk)
+    def failure(*a): raise ValueError('project root mismatch')
+    monkeypatch.setattr(app,'check_project',failure)
+    with pytest.raises(ValueError): executor.execute(cfg,store,'key',item)
+    assert sdk.created==sdk.submitted==0

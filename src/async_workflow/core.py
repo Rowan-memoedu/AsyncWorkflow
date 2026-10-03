@@ -74,7 +74,9 @@ class Settings(BaseModel):
     prefect_url: str = "http://127.0.0.1:4200/api"
     deepseek_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-flash"
-    asr_model: str = "qwen-audio-3.1-asr-flash-filetrans"
+    asr_provider: Literal["funasr", "bailian"] = "funasr"
+    asr_model: str = "fun-asr-realtime"
+    transcription_cli: Path = Path.home() / ".codex/skills/global-transcription/scripts/transcribe.py"
     oss_bucket: str = ""
     oss_endpoint: str = "https://oss-cn-beijing.aliyuncs.com"
     oss_region: str = "cn-beijing"
@@ -82,6 +84,8 @@ class Settings(BaseModel):
     credential_file: Path = Path("D:/AppData/AsyncWorkflow/access.dpapi.json")
     default_rem_id: str = ""
     project_aliases: dict[str, str] = Field(default_factory=dict)
+    command_workspace: Path = Path('D:/Workspaces/新建文件夹')
+    command_project_id: str = ''
     script_actions: dict[str, dict] = Field(default_factory=dict)
     enabled: bool = False
     enabled_at: str | None = None

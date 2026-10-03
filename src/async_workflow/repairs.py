@@ -14,21 +14,21 @@ from .core import Settings, Manifest, Attention, atomic, digest, read_json, now
 
 
 def identity(cfg, recording_id, stage):
-    if stage not in ('split','routing','publish'): raise Attention('unknown_repair_stage')
+    if stage not in ('split','content','routing','publish'): raise Attention('unknown_repair_stage')
     versions={
         'recording':recording_id,'stage':stage,
         'repair':digest(Path(__file__).read_bytes()),
         'routing':digest(Path(routing.__file__).read_bytes()),
-        'split':digest(splitter.SYSTEM) if stage=='split' else None,
+        'split':digest(splitter.SYSTEM) if stage in ('split','content') else None,
         'template':read_json(cfg.root/'daily-template.json',{}).get('version'),
         'targets':read_json(cfg.root/'todo-targets.json',{}).get('version'),
-        'format':'content-only',
+        'format':'content-with-separators',
     }
     return digest(json.dumps(versions,sort_keys=True))[:24]
 
 
 def prepare(cfg,store,stage,operation):
-    if stage not in ('split','routing','publish'): raise Attention('unknown_repair_stage')
+    if stage not in ('split','content','routing','publish'): raise Attention('unknown_repair_stage')
     folder=store.folder/'repairs'/operation
     for prior in folder.parent.glob('*/before.json'):
         if prior.parent != folder and not read_json(prior.parent/'plan.json',{}).get('completed'):
@@ -47,18 +47,24 @@ def prepare(cfg,store,stage,operation):
     if stage=='split':
         outline=(store.folder/'outline.md').read_text(encoding='utf-8')
         parts=splitter.split(cfg,transcript['text'],outline)
+    elif stage=='content': parts=[splitter.extract_content(cfg,p) for p in old]
     else: parts=[dict(p) for p in old]
     if any(p['kind']=='command' for p in parts): raise Attention('repair_will_not_create_or_replay_commands')
     used=set()
     refinements=0
     for part in parts:
-        same=next((p for p in old if p['index'] not in used and p['raw_text']==part['raw_text']),None)
+        origin=next((p for p in old if p['raw_text']==part['raw_text']),None)
+        if origin: part['source_effect']=origin['key']
+        same=next((p for p in old if p['index'] not in used and p['raw_text']==part['raw_text']
+                   and p.get('content_text',p['raw_text'])==part.get('content_text',part['raw_text'])),None)
         if same:
             used.add(same['index'])
             part['markdown']=same['markdown']
             part['reuses_effect']=same['key']
-        elif not part.get('markdown'):
-            part['markdown']=splitter.refine(cfg,part['raw_text'])
+        else:
+            part.pop('reuses_effect',None)
+            body=part.get('content_text',part['raw_text'])
+            part['markdown']=splitter.refine(cfg,body) if body.strip() else ''
             refinements+=1
         part['key']=digest(store.folder.name+operation+str(part['source_spans']))[:24]
     plan={'operation':operation,'stage':stage,'at':now(),'source_transcript_hash':digest(transcript['text']),
@@ -73,9 +79,10 @@ async def apply(cfg,store,folder,before,plan):
         # Decide every destination before any correction. Freeze the decisions on disk.
         for part in plan['segments']:
             key=part['key']
+            if part.get('cancelled'): continue
             if key in plan['routes']: continue
-            old=before['effects'].get(part.get('reuses_effect',''))
-            if plan['stage']=='publish' and old:
+            old=before['effects'].get(part.get('source_effect',part.get('reuses_effect','')))
+            if plan['stage'] in ('publish','content') and old:
                 route=old['routing']
             else:
                 route=await routing.plan(cfg,session,remnote.call,part['destination'],part['raw_text'],before['provenance'],item=part)
@@ -85,18 +92,30 @@ async def apply(cfg,store,folder,before,plan):
         for part in plan['segments']:
             key=part['key']
             old=before['effects'].get(part.get('reuses_effect',''))
+            source_effect=before['effects'].get(part.get('source_effect',''),old)
+            removal=store.read().get('external_removals',{}).get((source_effect or {}).get('root_id',''))
+            if removal:
+                part['cancelled']=True
+                effect={'status':'cancelled','reason':'user_kept_removed_output','root_id':source_effect['root_id'],
+                        'decision':removal,'reuses_effect':part.get('source_effect')}
+                store.save_effect(key,effect)
+                plan['corrections'][key]=effect
+                retained.add(source_effect['root_id'])
+                atomic(folder/'plan.json',plan)
+                continue
             if part.get('cancelled'):
                 store.save_effect(key,{'status':'cancelled'})
                 continue
             if key in plan['corrections']:
-                retained.add(plan['corrections'][key]['root_id'])
+                if plan['corrections'][key].get('root_id'): retained.add(plan['corrections'][key]['root_id'])
                 continue
             route=plan['routes'][key]
-            target=({'parent':old['parent']} if plan['stage']=='publish' and old
+            target=({k:source_effect[k] for k in ('parent','daily_id','created_document_id') if k in source_effect}
+                    if plan['stage'] in ('publish','content') and source_effect
                     else await remnote.resolve_target(cfg,session,route,store.folder.name))
             log={'recording':before.get('original_name'),'provenance':before.get('provenance'),
                  'sources':before.get('sources'),'repair_operation':plan['operation'],'stage':plan['stage']}
-            if old and old.get('status')=='verified' and old.get('backend')=='independent-remnote-plugin':
+            if old and old.get('root_id') and old.get('status')=='verified' and old.get('backend')=='independent-remnote-plugin':
                 plugin_effect=old.get('plugin_effect_key',store.folder.name+'/'+part['reuses_effect'])
                 result=await remnote.call(session,'relocate_outline',effect_key=plugin_effect,
                     operation_id=store.folder.name+'/'+plan['operation']+'/'+key,
@@ -104,7 +123,8 @@ async def apply(cfg,store,folder,before,plan):
                 if result.get('status')!='verified' or result.get('root_id')!=old['root_id']:
                     raise Attention('repair_readback_mismatch')
                 effect={'backend':'independent-remnote-plugin','status':'verified','root_id':result['root_id'],
-                        **target,'routing':route,'plugin_effect_key':plugin_effect,'content_format':'content-only',
+                        **target,'routing':route,'plugin_effect_key':plugin_effect,'content_format':'content-with-separators',
+                        'separators':result.get('separators'),
                         'metadata_log':log,'repair_operation':plan['operation'],'reuses_effect':part['reuses_effect'],
                         'metadata_archived_id':result.get('metadata_archived_id'),'verified_at':now()}
                 store.save_effect(key,effect)
@@ -112,7 +132,7 @@ async def apply(cfg,store,folder,before,plan):
                 if not store.effect(key):
                     store.save_effect(key,{'backend':'independent-remnote-plugin','status':'not_started',**target,'routing':route})
                 effect=await remnote.publish(cfg,store,key,part['markdown'],part['destination'],json.dumps(log,ensure_ascii=False),raw_text=part['raw_text'],item=part)
-            retained.add(effect['root_id'])
+            if effect.get('root_id'): retained.add(effect['root_id'])
             plan['corrections'][key]=effect
             atomic(folder/'plan.json',plan)
         # An obsolete owned output is archived only after all replacement results verify.
@@ -147,4 +167,5 @@ def repair_recording(recording_id:str,stage:str,operation_id:str):
         plan['flow_run_id']=str(flow_run.id)
         atomic(folder/'plan.json',plan)
         return {'operation':operation_id,'completed':True,'reused_asr':True,'new_outline_calls':plan['new_outline_calls'],
-                'roots':[v['root_id'] for v in plan['corrections'].values()]}
+                'roots':[v['root_id'] for v in plan['corrections'].values() if v.get('status')=='verified' and v.get('root_id')],
+                'kept_removed':[v['root_id'] for v in plan['corrections'].values() if v.get('reason')=='user_kept_removed_output']}
