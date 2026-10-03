@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field
 from .core import Attention, atomic, digest, now, read_json
 from .splitter import client, record_usage
+from . import routing_rules
 
 class Queries(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -135,6 +136,14 @@ async def plan(cfg, session, call, requested, content, provenance, *, item=None)
         chosen=await choose_document(cfg,session,call,requested,content)
         if chosen: return {**base,**chosen}
         return {**base,'type':'daily','branch_path':['其他碎片'],'reason':'spoken_target_no_usable_candidate','review_eligible':False}
+    chosen=routing_rules.choose(cfg,content,item,ask)
+    if chosen:
+        found=await call(session,'search_documents',queries=[chosen['target_title']])
+        candidates=[c for c in found['candidates'] if c['id']==chosen['parent_id']
+            and c.get('title','').casefold()!='trash'
+            and 'trash' not in [a.casefold() for a in c.get('ancestors',[])]]
+        if len(candidates)!=1: raise Attention('persistent_routing_target_unavailable')
+        return {**base,**chosen}
     def validate_path(choice):
         if choice.cross_category: choice.branch_path=['其他碎片']
         if choice.branch_path not in paths: raise ValueError('branch_path must match the static template')
