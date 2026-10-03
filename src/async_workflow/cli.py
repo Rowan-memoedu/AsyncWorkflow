@@ -5,7 +5,7 @@ import json
 import os
 from pathlib import Path
 
-from .core import Settings, Attention, Manifest, now, read_json
+from .core import Settings, Attention, Manifest, now, read_json, resolve_codex_path
 
 
 async def doctor(cfg):
@@ -13,7 +13,7 @@ async def doctor(cfg):
     from .remnote import connection, call
     import httpx
     credentials = access(cfg.credential_file)
-    result = {"enabled": cfg.enabled, "ffprobe": cfg.ffprobe.exists(), "codex": cfg.codex.exists(), "credential_available": {k: bool(credentials.get(k)) for k in ("DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "ALIBABA_CLOUD_ACCESS_KEY_ID", "ALIBABA_CLOUD_ACCESS_KEY_SECRET")}}
+    result = {"enabled": cfg.enabled, "ffprobe": cfg.ffprobe.exists(), "codex": resolve_codex_path(cfg.codex).exists(), "credential_available": {k: bool(credentials.get(k)) for k in ("DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "ALIBABA_CLOUD_ACCESS_KEY_ID", "ALIBABA_CLOUD_ACCESS_KEY_SECRET")}}
     try:
         async with connection(cfg) as session:
             result["remnote"] = await call(session, "status")
@@ -94,6 +94,7 @@ def main():
         result=accept(cfg,args.recording_id,args.receipt,args.decision)
         run=run_deployment('analyze-recording/local',parameters={'path':result['source'],'canary':True},
                            timeout=0,idempotency_key='accepted-asr:'+args.recording_id+':'+result['revision'],as_subflow=False)
+        Manifest(cfg,args.recording_id).update(analysis_run=str(run.id))
         print(json.dumps({**result,'run_id':str(run.id)},ensure_ascii=False))
     elif args.command in ("enable", "disable"):
         if args.command == "enable":

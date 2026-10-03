@@ -62,7 +62,23 @@ def normalize_funasr(value: dict, recording_id: str) -> dict:
             raise Attention('funasr_invalid_final_sentence')
     if ''.join(text.split()) != ''.join(''.join(s['text'] for s in sentences).split()):
         raise Attention('funasr_text_sentence_mismatch')
-    return {'text':text, 'sentences':sentences, 'model':'fun-asr-realtime', 'provider':'funasr',
+    # Some HTTP streams emit cumulative finals with fresh IDs but the same
+    # start time. A later containing span supersedes its exact text prefix.
+    # Never deduplicate equal words spoken at different positions in the audio.
+    stable = []
+    for sentence in sorted(sentences, key=lambda s:(s['start_ms'],s['end_ms'])):
+        if stable and sentence['start_ms'] == stable[-1]['start_ms']:
+            previous = stable[-1]
+            if sentence['text'].startswith(previous['text']):
+                stable[-1] = sentence
+                continue
+            raise Attention('funasr_overlapping_revisions_require_review')
+        if stable and sentence['start_ms'] < stable[-1]['end_ms']:
+            raise Attention('funasr_overlapping_revisions_require_review')
+        stable.append(sentence)
+    return {'text':'\n'.join(s['text'] for s in stable), 'sentences':stable,
+            'model':'fun-asr-realtime', 'provider':'funasr', 'normalization_revision':'timed-prefix-v1',
+            'collapsed_snapshots':len(sentences)-len(stable),
             'source_sha256':recording_id, 'provider_status':value['status']}
 
 

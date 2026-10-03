@@ -11,6 +11,8 @@ Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → 阿里�
 - Thread 消息只有整理后的正文；续接只有用户补充原话，不加提示前后缀。Codex 正常输出自然语言与 Markdown，不设置输出 schema；本机通过官方 Turn 状态记录运行完成、失败或中断，不能把回合完成当成业务目标已经通过验收。
 - 新 Thread 的 `command_workspace` 固定为用户指定工作区；`command_project_id` 必须是官方 `project/list` 返回的项目 ID。用 `project/read` 核对路径、`thread/metadata/update` 绑定，并读回后才提交任务。宿主工具中的 `local-...` ID 与 App Server 项目 ID 不可混用。
 - FUN-ASR 复用现有 global-transcription CLI 的 `--provider funasr` 文件入口，不改其他应用的全局默认。成功的旧 ASR 仍复用；遗留 OSS 任务只做核对及清理，不静默重转。
+- FUN-ASR HTTP 累积快照按时间范围和严格文本前缀归并，只保留同一起点的完整后续版本；不同时间的真实重复讲话保留，重叠但不兼容的版本进入待核对。原始服务回执保持原样，修复归并时复用回执，不重新识别音频。
+- ChatGPT 桌面端中的 Codex 更新若替换了内置运行时目录，仅在旧路径失效且受管理目录中恰有一个可用替代文件时自动解析新路径；保留有效的原配置和自定义路径，有多个候选时不猜测。
 - RemNote 使用 `remnote-plugin` 独立子包和 43141 回环服务，不修改或连接现有 RemNote MCP。录音归档接口包括显式快照、文档搜索/创建、日期与待办分支解析、幂等写入和受保护的旧输出迁移。
 - “日记模板”显式同步为本地快照；分类时不实时读取模板。口述目标模糊匹配后使用首选；无目标按录音日的模板分支分类；跨类整体或无可用候选进入“其他碎片”。
 - 命令依据原录音的语义判断，不依赖固定触发词；引用、否定和撤回不构成执行授权。需要决定的命令在自己的 Thread 中讨论。
@@ -54,6 +56,10 @@ Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → 阿里�
 使用 `python -m async_workflow.cli repair <recording_id> --from split|content|routing|publish` 提交原生 Prefect 修复 flow。`split` 复用原 ASR，仅为重新分出的内容生成大纲；`content` 保持分块和目标，只重新区分操作语句与正文，正文未变则复用；`routing` 只重新选择去处并迁移；`publish` 只修复输出格式。均不重新转写，也不自动重放命令。
 
 已明确确认另一份 FUN-ASR 转写时，用 `accept-asr <recording_id> --receipt <raw.json> --decision <用户的确认>` 接回下游。先核对音频哈希、旧 flow 均已终止、旧输出已归档且没有已启动的 Thread；保留原转写和旧效果。它导入现有结果，不重新调用 ASR；带修订身份提交原生 Prefect 分析，重复确认不重复执行。
+
+接回修订后同时更新分析运行引用，状态查询跟随当前运行。2026-10-03 新增两条真实录音顺序测试，共 6 个正文块完成独立 RemNote 回读：文档类型、父节点、全部正文和块前后空节点均匹配。115 项 Python 测试通过；当前安装的 Codex 运行时已完成官方 Project 只读核验。记录见 `D:/Artifacts/AsyncWorkflow/2026-10-03/latest-two-1523/测试结果.md`。本轮两条均为 RemNote 内容，没有新增 Codex 命令，因此不作为 Thread 创建和回答格式的新验收。
+
+尚未覆盖：从录音中的“以后某类内容都放到某文档”指令保存跨录音的长期路由规则。当前能执行本条录音指定的文档创建与归档；不能将这类未来要求仅因本次归档成功就视为已经生效。
 
 修复前快照和结果保存在该录音的 `repairs/<operation>/`；迁移前比对原正文、父链和已有收据，拒绝覆盖人工改动。旧元数据与被替代的本流程输出可恢复地移入根级 trash。失败后使用 `cli retry <flow_run_id>` 恢复同一修复，避免另起重复操作。`scripts/verify_readbacks.py` 可将独立读取的 RemNote 树与结果大纲、原 ASR 哈希逐项核对。
 

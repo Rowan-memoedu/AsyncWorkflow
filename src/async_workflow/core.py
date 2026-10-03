@@ -39,6 +39,17 @@ def file_hash(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def resolve_codex_path(configured: Path) -> Path:
+    """Follow a replaced Desktop runtime only when one installed binary is unambiguous."""
+    if configured.is_file():
+        return configured
+    managed = Path.home() / 'AppData/Local/OpenAI/Codex/bin'
+    if configured.parent.parent != managed:
+        return configured
+    candidates = [p for p in managed.glob('*/codex.exe') if p.is_file()]
+    return candidates[0] if len(candidates) == 1 else configured
+
+
 def read_json(path: Path, default=None):
     return json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else default
 

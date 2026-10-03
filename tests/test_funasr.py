@@ -43,6 +43,37 @@ def test_wrong_source_receipt_cannot_replace_transcript(setup):
     with pytest.raises(Attention,match='source_or_provider'): asr.normalize_funasr(raw,store.folder.name)
 
 
+def test_cumulative_http_snapshots_use_the_last_containing_span(setup):
+    _,store,_,raw=setup
+    raw['utterances']=[{'start_ms':100,'end_ms':300,'text':'First.'},
+        {'start_ms':100,'end_ms':900,'text':'First. Second.'},
+        {'start_ms':100,'end_ms':1500,'text':'First. Second. Third.'},
+        {'start_ms':300000,'end_ms':301000,'text':'Next chunk.'}]
+    raw['text']='\n'.join(s['text'] for s in raw['utterances'])
+    result=asr.normalize_funasr(raw,store.folder.name)
+    assert result['text']=='First. Second. Third.\nNext chunk.'
+    assert result['collapsed_snapshots']==2
+    assert result['sentences']==[raw['utterances'][2],raw['utterances'][3]]
+
+
+def test_real_repeated_speech_at_different_times_is_preserved(setup):
+    _,store,_,raw=setup
+    raw['utterances']=[{'start_ms':100,'end_ms':300,'text':'Again.'},
+        {'start_ms':500,'end_ms':900,'text':'Again.'}]
+    raw['text']='Again.\nAgain.'
+    result=asr.normalize_funasr(raw,store.folder.name)
+    assert result['text']==raw['text'] and result['collapsed_snapshots']==0
+
+
+def test_conflicting_overlapping_speech_is_not_silently_rewritten(setup):
+    _,store,_,raw=setup
+    raw['utterances']=[{'start_ms':100,'end_ms':300,'text':'First interpretation.'},
+        {'start_ms':100,'end_ms':900,'text':'Different interpretation.'}]
+    raw['text']='\n'.join(s['text'] for s in raw['utterances'])
+    with pytest.raises(Attention,match='overlapping_revisions_require_review'):
+        asr.normalize_funasr(raw,store.folder.name)
+
+
 def test_accepted_revision_retains_before_and_never_erases_later_work(setup,monkeypatch):
     cfg,store,source,raw=setup
     atomic(store.folder/'asr.json',{'text':'Incorrect old source.'})

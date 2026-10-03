@@ -12,13 +12,14 @@ from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
 from openai_codex.client import CodexClient
 from pydantic import BaseModel, ConfigDict
 
-from .core import Attention, UnknownOutcome, atomic, digest, now, read_json
+from .core import Attention, UnknownOutcome, atomic, digest, now, read_json, resolve_codex_path
 
 
 def sdk_config(cfg, cwd: Path) -> CodexConfig:
     # Keep the desktop's CODEX_HOME, login and normal user configuration. The
-    # explicit binary is the runtime whose Desktop interoperability was tested.
-    return CodexConfig(codex_bin=str(cfg.codex), cwd=str(cwd),
+    # Desktop updates replace the managed binary directory. Resolve only an
+    # unambiguous replacement; preserve existing/custom runtime configuration.
+    return CodexConfig(codex_bin=str(resolve_codex_path(cfg.codex)), cwd=str(cwd),
                        client_name="async_workflow", client_title="Async Workflow",
                        experimental_api=True)
 
