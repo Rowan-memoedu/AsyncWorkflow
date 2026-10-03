@@ -8,6 +8,7 @@ Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → 阿里�
 
 - 新命令通过官方 `openai-codex` SDK 创建持久 Thread，先保存 Thread ID，再提交并保存 Turn ID。用户直接在该 Thread 继续；桌面持有写入权时不创建替代 Thread。
 - 所有输出先区分承载操作和正文：新建/命名/定位 document 或 Thread 的说明留作操作元数据，实际正文沿用冻结提示词整理。Codex 收到整理后的任务正文，查询、执行要求及限制不会被当成容器指令移除。
+- Thread 消息只有整理后的正文；续接只有用户补充原话，不加提示前后缀。Codex 正常输出自然语言与 Markdown，不设置输出 schema；本机通过官方 Turn 状态记录运行完成、失败或中断，不能把回合完成当成业务目标已经通过验收。
 - 新 Thread 的 `command_workspace` 固定为用户指定工作区；`command_project_id` 必须是官方 `project/list` 返回的项目 ID。用 `project/read` 核对路径、`thread/metadata/update` 绑定，并读回后才提交任务。宿主工具中的 `local-...` ID 与 App Server 项目 ID 不可混用。
 - FUN-ASR 复用现有 global-transcription CLI 的 `--provider funasr` 文件入口，不改其他应用的全局默认。成功的旧 ASR 仍复用；遗留 OSS 任务只做核对及清理，不静默重转。
 - RemNote 使用 `remnote-plugin` 独立子包和 43141 回环服务，不修改或连接现有 RemNote MCP。录音归档接口包括显式快照、文档搜索/创建、日期与待办分支解析、幂等写入和受保护的旧输出迁移。

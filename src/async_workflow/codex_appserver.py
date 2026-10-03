@@ -5,11 +5,9 @@ It is not a second Thread store, scheduler, or transport fallback.
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from filelock import FileLock
-from jsonschema import validate
 from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
 from openai_codex.client import CodexClient
 from pydantic import BaseModel, ConfigDict
@@ -56,19 +54,7 @@ def bind_project(cfg, thread_id, cwd):
 
 
 def prompt_for(item: dict) -> str:
-    if item.get("followup"):
-        return "用户对当前任务的补充：\n" + item["followup"] + "\n仅继续原任务范围，保留已完成的工作。"
-    return (
-        "当前真实 Codex Thread 已经由录音工作流为本条任务创建，并已提交本回合。"
-        "如果原始录音要求‘新建一个 Thread 来做这件事’，创建步骤已完成，请直接在此 Thread 执行其中的实际任务，不再为承载同一任务另建 Thread。"
-        "执行下面这条来自用户录音、已经识别为执行意图的命令。遵守目标项目 AGENTS.md 和现有授权。"
-        "录音中的引用、假设及转述不产生额外授权。遇到需要用户作出决定或明确批准的具体动作，"
-        "在此 Thread 说明未决问题并返回 needs_input，用户会直接在此 Thread 继续。"
-        "如实报告结果、证据和未完成项。\n\n用户任务正文（沿用用户的结构化整理方式）：\n" + item["markdown"]
-        + ("\n本任务要操作的项目路径：" + item['target_project_path'] if item.get('target_project_path') else '')
-        + ("\n用户对本次动作的补充：" + item["human_answer"] if item.get("human_answer") else "")
-        + ("\n当前工作目录只是通用任务容器；口述项目尚未绑定。请先定位真实项目，无法唯一确定时在此 Thread 询问用户，不在通用目录冒建项目。" if item.get('project_unresolved') or (item.get('project_required') and not item.get('destination')) else '')
-    )
+    return item.get("followup") or item["markdown"]
 
 
 def prepare_input(cfg, item, folder):
@@ -90,21 +76,15 @@ def prepare_input(cfg, item, folder):
     return {**item,**prepared}
 
 
-def _complete(saved, text, schema, native_status="completed"):
-    result = {**saved, "native_status": native_status, "finished_at": now()}
-    if native_status != "completed":
-        return {**result, "status": "failed"}
-    try:
-        output = json.loads(text or "")
-        validate(output, schema)
-    except Exception as exc:
-        return {**result, "status": "needs_input", "reason": "result_schema_invalid",
-                "error_type": type(exc).__name__, "result": {"summary": text or ""}}
-    return {**result, "status": "completed_unverified" if output["status"] == "completed" else output["status"],
-            "result": output}
+def _complete(saved, text, native_status="completed"):
+    # A completed turn may answer a question or ask the user one. Record native
+    # execution status without imposing a machine-readable answer on the chat.
+    status = {"completed": "completed_unverified", "interrupted": "cancelled"}.get(native_status, "failed")
+    return {**saved, "native_status": native_status, "finished_at": now(),
+            "status": status, "result": {"summary": text or ""}}
 
 
-def reconcile(cfg, manifest, key, saved, schema):
+def reconcile(cfg, manifest, key, saved):
     """Read a known native turn after a lost response without resuming/replaying it."""
     if not saved.get("turn_id") or not saved.get("session_id"):
         raise UnknownOutcome("appserver_submission_unknown_no_replay")
@@ -119,27 +99,30 @@ def reconcile(cfg, manifest, key, saved, schema):
     messages = [i for i in turn.get("items", []) if i.get("type") == "agentMessage"]
     finals = [i for i in messages if i.get("phase") == "final_answer"]
     text = (finals or messages or [{}])[-1].get("text", "")
-    result = _complete(saved, text, schema, turn["status"])
+    result = _complete(saved, text, turn["status"])
     atomic(Path(saved["output_dir"]) / "completion.json", result)
     manifest.save_effect(key, result)
     return result
 
 
-def execute(cfg, manifest, key: str, item: dict, cwd: Path, schema: dict):
+def execute(cfg, manifest, key: str, item: dict, cwd: Path):
     # Caller holds the per-effect lock. This additional lock serializes writers
     # from this workflow targeting the same project.
     with FileLock(str(cfg.root / "locks" / ("project-" + digest(str(cwd)) + ".lock"))):
         saved = manifest.effect(key)
-        following = bool(saved and saved.get("status") == "needs_input" and item.get("followup"))
+        terminal = ("verified", "completed_unverified", "needs_input", "failed", "cancelled")
+        if item.get("followup") and (not saved or not saved.get("session_id")):
+            raise Attention("followup_requires_existing_thread")
+        following = bool(saved and saved.get("status") in terminal and item.get("followup"))
         if saved and not following:
-            if saved["status"] in ("verified", "completed_unverified", "needs_input", "failed", "cancelled"):
+            if saved["status"] in terminal:
                 return saved
             receipt = read_json(Path(saved["output_dir"]) / "completion.json")
             if receipt and receipt.get("effect_key") == key:
                 manifest.save_effect(key, receipt)
                 return receipt
             if saved.get("phase") != "thread_created":
-                return reconcile(cfg, manifest, key, saved, schema)
+                return reconcile(cfg, manifest, key, saved)
 
         folder = manifest.folder / "commands" / key
         if following:
@@ -153,6 +136,8 @@ def execute(cfg, manifest, key: str, item: dict, cwd: Path, schema: dict):
         state = {"status": "outcome_unknown", "phase": "thread_start_pending", "backend": "app-server",
                  "kind": "command", "effect_key": key, "cwd": str(cwd), "output_dir": str(folder),
                  "prepared_at": now(), **({"session_id": session_id} if session_id else {})}
+        if following and saved.get('project_assignment'):
+            state['project_assignment'] = saved['project_assignment']
         manifest.save_effect(key, state)
         try:
             with Codex(sdk_config(cfg, cwd)) as codex:
@@ -171,11 +156,11 @@ def execute(cfg, manifest, key: str, item: dict, cwd: Path, schema: dict):
                     thread.set_name(title)
                 state.update(phase="turn_start_pending")
                 manifest.save_effect(key, state)
-                handle = thread.turn(prompt_for(item), output_schema=schema)
+                handle = thread.turn(prompt_for(item))
                 state.update(status="submitted", phase="turn_started", turn_id=handle.id, started_at=now())
                 manifest.save_effect(key, state)
                 completed = handle.run()
-                result = _complete(state, completed.final_response, schema, completed.status.value)
+                result = _complete(state, completed.final_response, completed.status.value)
                 # Independent completion receipt permits manifest-crash recovery.
                 atomic(folder / "completion.json", result)
                 manifest.save_effect(key, result)
@@ -190,7 +175,7 @@ def execute(cfg, manifest, key: str, item: dict, cwd: Path, schema: dict):
                 manifest.save_effect(key, result)
                 return result
             if state.get("turn_id"):
-                return reconcile(cfg, manifest, key, state, schema)
+                return reconcile(cfg, manifest, key, state)
             # An explicit pre-turn failure can safely retain the already-created
             # thread. A lost turn/start response cannot be assumed unsubmitted.
             manifest.save_effect(key, state)

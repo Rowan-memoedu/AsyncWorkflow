@@ -34,7 +34,7 @@ def execute(cfg: Settings, manifest: Manifest, key: str, item: dict) -> dict:
                 item={**item,'target_project_path':str(project(cfg,destination))}
             if not cfg.command_workspace.is_dir():
                 raise Attention('command_workspace_unavailable')
-            return codex_appserver.execute(cfg, manifest, key, item, cfg.command_workspace, RESULT_SCHEMA)
+            return codex_appserver.execute(cfg, manifest, key, item, cfg.command_workspace)
         # Only already-recorded legacy Exec work is reconciled/resumed below.
         # New Codex commands use the official App Server SDK.
         return _execute(cfg, manifest, key, item)

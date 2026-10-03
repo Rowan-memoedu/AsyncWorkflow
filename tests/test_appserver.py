@@ -23,7 +23,8 @@ def setup(tmp_path,monkeypatch):
 class FakeCodex:
     def __init__(self, store, *, lose_start=False, fail_run=False):
         self.store, self.lose_start, self.fail_run = store, lose_start, fail_run
-        self.created = self.submitted = 0
+        self.created = self.submitted = self.resumed = 0
+        self.inputs = []
 
     def __call__(self, config): return self
     def __enter__(self): return self
@@ -34,7 +35,14 @@ class FakeCodex:
         self.created += 1
         return SimpleNamespace(id='native-thread', set_name=lambda *_:None, turn=self.turn)
 
+    def thread_resume(self, thread_id):
+        assert thread_id == 'native-thread'
+        self.resumed += 1
+        return SimpleNamespace(id=thread_id, turn=self.turn)
+
     def turn(self, *args, **kwargs):
+        assert not kwargs  # No output schema or other per-turn overrides.
+        self.inputs.append(args[0])
         # A lost turn/start reply must still leave an exact native Thread ID.
         assert self.store.effect('key')['session_id'] == 'native-thread'
         assert self.store.effect('key')['phase'] == 'turn_start_pending'
@@ -45,8 +53,8 @@ class FakeCodex:
     def run(self):
         assert self.store.effect('key')['turn_id'] == 'native-turn'
         if self.fail_run: raise ConnectionError('lost completion')
-        return SimpleNamespace(status=SimpleNamespace(value='completed'), final_response=json.dumps({
-            'status':'completed','summary':'done','evidence':['real output'],'remaining':[]}))
+        return SimpleNamespace(status=SimpleNamespace(value='completed'),
+                               final_response='建议先比较维护成本。\n\n- [官方资料](https://example.org/spec)')
 
 
 def test_new_commands_use_sdk_and_preserve_ids_before_submission(setup, monkeypatch):
@@ -60,6 +68,8 @@ def test_new_commands_use_sdk_and_preserve_ids_before_submission(setup, monkeypa
     assert result['project_assignment']['project_id']==cfg.command_project_id
     assert result['session_id'] == 'native-thread' and result['turn_id'] == 'native-turn'
     assert result['status'] == 'completed_unverified'
+    assert sdk.inputs == [item['markdown']]
+    assert result['result']['summary'].startswith('建议先比较维护成本。')
     assert executor.execute(cfg, store, 'key', item) == store.effect('key')
     assert sdk.created == sdk.submitted == 1
 
@@ -79,7 +89,7 @@ def test_lost_completion_uses_read_only_reconciliation(setup, monkeypatch):
     sdk = FakeCodex(store, fail_run=True)
     monkeypatch.setattr(app, 'Codex', sdk)
     observed = []
-    def reconcile(cfg, manifest, key, saved, schema):
+    def reconcile(cfg, manifest, key, saved):
         observed.append(saved)
         assert saved['turn_id'] == 'native-turn'
         return {**saved, 'status':'completed_unverified'}
@@ -122,21 +132,48 @@ def test_legacy_failed_exec_keeps_native_id(setup):
     assert result['status'] == 'failed' and result['session_id'] == 'legacy-thread'
 
 
-def test_schema_failure_is_handed_back_to_same_thread():
-    result = app._complete({'session_id':'native-thread'}, 'unstructured answer', executor.RESULT_SCHEMA)
-    assert result['status'] == 'needs_input' and result['session_id'] == 'native-thread'
+@pytest.mark.parametrize('answer', ['这是自然语言回答。\n\n- 一个要点', '你想比较哪两个方案？', '{"status":"needs_input"}'])
+def test_chat_answers_are_preserved_without_parsing_status_from_their_text(answer):
+    result = app._complete({'session_id':'native-thread'}, answer)
+    assert result['status'] == 'completed_unverified' and result['session_id'] == 'native-thread'
+    assert result['result']['summary'] == answer
+    assert 'reason' not in result
 
 
-def test_failed_native_turn_not_reported_completed():
-    result = app._complete({'session_id':'native-thread'}, '', executor.RESULT_SCHEMA, 'failed')
-    assert result['status'] == 'failed' and result['session_id'] == 'native-thread'
+@pytest.mark.parametrize('native,status', [('failed','failed'), ('interrupted','cancelled')])
+def test_unsuccessful_native_turn_not_reported_completed(native,status):
+    result = app._complete({'session_id':'native-thread'}, '正文仍保留。', native)
+    assert result['status'] == status and result['session_id'] == 'native-thread'
+    assert result['result']['summary'] == '正文仍保留。'
 
 
 def test_prompt_uses_structured_task_without_container_instruction():
     source='新建一个 Thread，研究某项公开协议。'
-    prompt=app.prompt_for({'raw_text':source,'markdown':'# 研究公开协议\n- 比较维护成本'})
-    assert source not in prompt and '# 研究公开协议\n- 比较维护成本' in prompt
-    assert '创建步骤已完成' in prompt and '不再为承载同一任务另建 Thread' in prompt
+    body='# 研究公开协议\n- 比较维护成本'
+    prompt=app.prompt_for({'raw_text':source,'markdown':body,'target_project_path':'D:/example',
+                           'project_unresolved':True})
+    assert prompt == body
+
+
+def test_normal_chat_followup_uses_same_thread_and_exact_user_text(setup,monkeypatch):
+    cfg,store,item=setup
+    sdk=FakeCodex(store)
+    monkeypatch.setattr(app,'Codex',sdk)
+    executor.execute(cfg,store,'key',item)
+    reply='接下来比较它们的维护成本。'
+    result=executor.execute(cfg,store,'key',{**item,'followup':reply})
+    assert sdk.created == sdk.resumed == 1 and sdk.submitted == 2
+    assert sdk.inputs == [item['markdown'],reply]
+    assert result['project_assignment']['project_id'] == cfg.command_project_id
+
+
+def test_followup_without_thread_cannot_create_a_second_task(setup,monkeypatch):
+    cfg,store,item=setup
+    sdk=FakeCodex(store)
+    monkeypatch.setattr(app,'Codex',sdk)
+    with pytest.raises(app.Attention,match='followup_requires_existing_thread'):
+        executor.execute(cfg,store,'key',{**item,'followup':'继续'})
+    assert sdk.created == sdk.submitted == 0
 
 
 def test_direct_commands_are_partitioned_and_structured_once(setup,monkeypatch):
