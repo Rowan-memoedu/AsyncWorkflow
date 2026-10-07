@@ -102,15 +102,20 @@ def watch(cfg: Settings):
     def sweep():
         current = Settings.load()
         if not current.enabled:
+            atomic(current.root/'watcher-status.json', {'checked_at':now(),'enabled':False,'submitted':0})
             return
         historical_ids = {str(value) for value in read_json(current.root / "xiaomi-baseline.json", {}).get("asset_ids", [])}
         historical_hashes = set(read_json(current.root / "baseline.json", {}).get("hashes", []))
         attempted = 0
+        submitted = 0
         for path in audio_files(current.inbox):
             if attempted >= current.max_batch:
                 break
             provenance = source_metadata(path, current)
             if provenance.get("source") == "xiaomi" and provenance["asset_id"] in historical_ids:
+                continue
+            timestamp = datetime.fromisoformat(provenance['recorded_at']) if provenance.get('recorded_at') else None
+            if current.enabled_at and timestamp and timestamp < datetime.fromisoformat(current.enabled_at):
                 continue
             # An existing manifest is cheap to inspect; failures remain visible in Prefect.
             identity = file_hash(path)
@@ -121,9 +126,12 @@ def watch(cfg: Settings):
                 continue
             attempted += 1
             try:
-                submit_file(current, path)
+                result=submit_file(current, path)
+                submitted += bool(result.get('run_id'))
             except Attention as exc:
                 atomic(current.root / "last-ingest-error.json", {"time": now(), "reason": str(exc)})
+        atomic(current.root/'watcher-status.json', {'checked_at':now(),'enabled':True,
+               'enabled_at':current.enabled_at,'attempted':attempted,'submitted':submitted})
     try:
         recover(cfg)
         sweep()

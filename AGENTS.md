@@ -3,7 +3,7 @@
 Windows 本地异步录音处理：Prefect 编排，FUN-ASR 转写，冻结 prompt 整理，独立 RemNote 插件和官方 Codex App Server 输出。
 
 - 源码只在此仓库；运行数据 D:/AppData/AsyncWorkflow，产物 D:/Artifacts/AsyncWorkflow，缓存 D:/Caches/AsyncWorkflow。
-- 运行入口保持 disabled，直到独立 RemNote 插件和小米新增录音端到端通过。服务运行不等于功能验收。
+- 新增录音自动入口按用户 2026-10-07 明确授权已开启；历史云端 ID、哈希及启用前录音时间排除在自动处理之外。监控启用状态已读回，下一条真实手机新增录音完整链路仍待观察；服务运行不等于完整功能验收。
 - 不修改或连接现有 RemNote MCP。插件子包独立依赖、构建和协议；只实现本流程功能。
 - 调试重载 RemNote 桌面主程序时使用正常可见窗口启动，不使用 `Start-Process -WindowStyle Hidden`。隐藏启动只用于后台桥接服务；重载后分别验证主窗口可见且响应、插件连接正常。进程或插件存活不能代替桌面可用性验收。
 - 日记模板只在显式 sync-template 时读取。录音按 Asia/Shanghai 的录音日归档；无目标按模板语义分类，整体跨类别或无类别放其他碎片。

@@ -43,3 +43,42 @@ def test_historical_baseline_does_not_consume_new_recording_batch(tmp_path, monk
     assert dispatched == new[:2]
     if source_kind == 'xiaomi':
         assert not any(path in historical for path in hashed)
+
+
+def test_pre_enable_recordings_do_not_starve_new_audio_or_get_hashed(tmp_path,monkeypatch):
+    from async_workflow.core import read_json
+    cfg=Settings(root=tmp_path/'state',inbox=tmp_path/'audio',artifacts=tmp_path/'out',
+                 ffprobe=Path('ffprobe'),codex=Path('codex'),enabled=True,max_batch=1,
+                 enabled_at='2026-10-07T06:00:00+00:00')
+    cfg.prepare()
+    old=[cfg.inbox/f'old-{i}.wav' for i in range(20)]
+    fresh=cfg.inbox/'10-07-2026 14.01.wav'
+    monkeypatch.setattr(Settings,'load',lambda:cfg)
+    monkeypatch.setattr(ingest,'recover',lambda _:None)
+    monkeypatch.setattr(ingest,'watchfiles',lambda *a,**k:iter(()))
+    monkeypatch.setattr(ingest,'audio_files',lambda _:iter([*old,fresh]))
+    monkeypatch.setattr(ingest,'source_metadata',lambda path,cfg:{'recorded_at':
+                        '2026-10-07T06:01:00+00:00' if path==fresh else '2026-10-06T00:00:00+00:00'})
+    def hashed(path):
+        assert path==fresh
+        return 'a'*64
+    monkeypatch.setattr(ingest,'file_hash',hashed)
+    calls=[]
+    monkeypatch.setattr(ingest,'submit_file',lambda current,path:calls.append(path) or {'run_id':'native'})
+    ingest.watch(cfg)
+    assert calls==[fresh]
+    status=read_json(cfg.root/'watcher-status.json')
+    assert status['enabled'] and status['submitted']==1 and status['attempted']==1
+
+
+def test_disabled_watcher_writes_health_without_scanning(tmp_path,monkeypatch):
+    from async_workflow.core import read_json
+    cfg=Settings(root=tmp_path/'state',inbox=tmp_path/'audio',artifacts=tmp_path/'out',
+                 ffprobe=Path('ffprobe'),codex=Path('codex'))
+    cfg.prepare()
+    monkeypatch.setattr(Settings,'load',lambda:cfg)
+    monkeypatch.setattr(ingest,'recover',lambda _:None)
+    monkeypatch.setattr(ingest,'watchfiles',lambda *a,**k:iter(()))
+    monkeypatch.setattr(ingest,'audio_files',lambda _:pytest.fail('disabled ingestion'))
+    ingest.watch(cfg)
+    assert read_json(cfg.root/'watcher-status.json')['enabled'] is False
