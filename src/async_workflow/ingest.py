@@ -3,11 +3,12 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from watchfiles import watch as watchfiles
 from prefect.deployments import run_deployment
 
 from .core import Settings, Attention, Manifest, EXTENSIONS, safe_source, source_metadata, file_hash, recorded_time, read_json, atomic, now
 from .recording_types import fully_processed
+
+SCAN_INTERVAL_SECONDS = 1800
 
 
 def submission_receipt(manifest, result):
@@ -98,11 +99,18 @@ def submit_file(cfg: Settings, path: Path, *, canary=False):
                                   'reused_asr': (manifest.folder/'asr.json').exists()})
 
 
+def scan_ticks():
+    while True:
+        time.sleep(SCAN_INTERVAL_SECONDS)
+        yield
+
+
 def watch(cfg: Settings):
     def sweep():
         current = Settings.load()
         if not current.enabled:
-            atomic(current.root/'watcher-status.json', {'checked_at':now(),'enabled':False,'submitted':0})
+            atomic(current.root/'watcher-status.json', {'checked_at':now(),'enabled':False,'submitted':0,
+                   'scan_interval_seconds':SCAN_INTERVAL_SECONDS})
             return
         historical_ids = {str(value) for value in read_json(current.root / "xiaomi-baseline.json", {}).get("asset_ids", [])}
         historical_hashes = set(read_json(current.root / "baseline.json", {}).get("hashes", []))
@@ -131,13 +139,14 @@ def watch(cfg: Settings):
             except Attention as exc:
                 atomic(current.root / "last-ingest-error.json", {"time": now(), "reason": str(exc)})
         atomic(current.root/'watcher-status.json', {'checked_at':now(),'enabled':True,
-               'enabled_at':current.enabled_at,'attempted':attempted,'submitted':submitted})
+               'enabled_at':current.enabled_at,'attempted':attempted,'submitted':submitted,
+               'scan_interval_seconds':SCAN_INTERVAL_SECONDS})
     try:
         recover(cfg)
         sweep()
     except Exception as exc:
         atomic(cfg.root / "last-ingest-error.json", {"time":now(), "error_type":type(exc).__name__})
-    for _ in watchfiles(cfg.inbox, recursive=True, yield_on_timeout=True, rust_timeout=60000):
+    for _ in scan_ticks():
         try:
             recover(cfg)
             sweep()

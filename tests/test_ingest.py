@@ -35,7 +35,7 @@ def test_historical_baseline_does_not_consume_new_recording_batch(tmp_path, monk
         return file_hash(path)
     monkeypatch.setattr(Settings, 'load', lambda: cfg)
     monkeypatch.setattr(ingest, 'recover', lambda _: None)
-    monkeypatch.setattr(ingest, 'watchfiles', lambda *a, **kw: iter(()))
+    monkeypatch.setattr(ingest, 'scan_ticks', lambda: iter(()))
     monkeypatch.setattr(ingest, 'audio_files', lambda _: iter([*historical, *new]))
     monkeypatch.setattr(ingest, 'submit_file', submit)
     monkeypatch.setattr(ingest, 'file_hash', hash_observed)
@@ -55,7 +55,7 @@ def test_pre_enable_recordings_do_not_starve_new_audio_or_get_hashed(tmp_path,mo
     fresh=cfg.inbox/'10-07-2026 14.01.wav'
     monkeypatch.setattr(Settings,'load',lambda:cfg)
     monkeypatch.setattr(ingest,'recover',lambda _:None)
-    monkeypatch.setattr(ingest,'watchfiles',lambda *a,**k:iter(()))
+    monkeypatch.setattr(ingest,'scan_ticks',lambda:iter(()))
     monkeypatch.setattr(ingest,'audio_files',lambda _:iter([*old,fresh]))
     monkeypatch.setattr(ingest,'source_metadata',lambda path,cfg:{'recorded_at':
                         '2026-10-07T06:01:00+00:00' if path==fresh else '2026-10-06T00:00:00+00:00'})
@@ -78,7 +78,28 @@ def test_disabled_watcher_writes_health_without_scanning(tmp_path,monkeypatch):
     cfg.prepare()
     monkeypatch.setattr(Settings,'load',lambda:cfg)
     monkeypatch.setattr(ingest,'recover',lambda _:None)
-    monkeypatch.setattr(ingest,'watchfiles',lambda *a,**k:iter(()))
+    monkeypatch.setattr(ingest,'scan_ticks',lambda:iter(()))
     monkeypatch.setattr(ingest,'audio_files',lambda _:pytest.fail('disabled ingestion'))
     ingest.watch(cfg)
     assert read_json(cfg.root/'watcher-status.json')['enabled'] is False
+
+
+def test_monitor_scans_only_on_half_hour_ticks(tmp_path, monkeypatch):
+    cfg = Settings(root=tmp_path/'state', inbox=tmp_path/'audio', artifacts=tmp_path/'out',
+                   ffprobe=Path('ffprobe'), codex=Path('codex'), enabled=True)
+    cfg.prepare()
+    elapsed, scans = [0], []
+    class StopMonitor(Exception):
+        pass
+    def sleep(seconds):
+        assert seconds == 1800
+        if elapsed[0] == 3600:
+            raise StopMonitor
+        elapsed[0] += seconds
+    monkeypatch.setattr(Settings, 'load', lambda: cfg)
+    monkeypatch.setattr(ingest, 'recover', lambda _: None)
+    monkeypatch.setattr(ingest, 'audio_files', lambda _: scans.append(elapsed[0]) or iter(()))
+    monkeypatch.setattr(ingest.time, 'sleep', sleep)
+    with pytest.raises(StopMonitor):
+        ingest.watch(cfg)
+    assert scans == [0, 1800, 3600]
