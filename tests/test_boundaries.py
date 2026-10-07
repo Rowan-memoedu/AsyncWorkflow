@@ -15,7 +15,7 @@ def cfg(tmp_path):
     return value
 
 
-@pytest.mark.parametrize("name,duration,expected", [("20261002_130000.m4a", 1200, "eligible"), ("20261002_130000.m4a",1200.01,"over_duration"), ("电话20261002_130000.m4a",4,"name_not_datetime"), ("微信录音.m4a",4,"name_not_datetime"), ("2026-10-02_13-00-00.wav",4,"eligible"), ("20260230_130000.wav",4,"name_not_datetime")])
+@pytest.mark.parametrize("name,duration,expected", [("20261002_130000.m4a", 1200, "over_duration"), ("20261002_130000.m4a",1200.01,"over_duration"), ("电话20261002_130000.m4a",4,"name_not_datetime"), ("微信录音.m4a",4,"name_not_datetime"), ("2026-10-02_13-00-00.wav",4,"eligible"), ("20260230_130000.wav",4,"name_not_datetime")])
 def test_filter(name,duration,expected):
     assert eligibility(name,duration) == expected
 

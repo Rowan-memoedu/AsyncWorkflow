@@ -14,7 +14,11 @@ def reanalyze(cfg, recording_id):
     if (folder/'proposal.json').exists():
         return {'proposal':str(folder),'existing':True}
     outline=splitter.refine(cfg,transcript['text'])
-    parts=splitter.split(cfg,transcript['text'],outline)
+    if store.read().get('recording_type') == 'conversation':
+        from .recording_types import conversation_part
+        parts=[conversation_part(recording_id,transcript['text'],outline)]
+    else:
+        parts=splitter.split(cfg,transcript['text'],outline)
     atomic(folder/'outline.md',outline,text=True)
     atomic(folder/'proposal.json',{'version':version,'segments':parts,'dispatch_allowed':False})
     return {'proposal':str(folder),'dispatch_allowed':False}

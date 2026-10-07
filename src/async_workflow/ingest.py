@@ -7,6 +7,34 @@ from watchfiles import watch as watchfiles
 from prefect.deployments import run_deployment
 
 from .core import Settings, Attention, Manifest, EXTENSIONS, safe_source, source_metadata, file_hash, recorded_time, read_json, atomic, now
+from .recording_types import fully_processed
+
+
+def submission_receipt(manifest, result):
+    data = manifest.read()
+    history = data.get('submission_log', [])
+    manifest.update(submission_log=[*history, {'at': now(), **result}])
+    return result
+
+
+def continue_runs(data):
+    """Retry existing native failures; never create replacement jobs or effects."""
+    from uuid import UUID
+    from prefect.client.orchestration import get_client
+    from prefect.states import Scheduled
+    ids = ([data['analysis_run']] if data.get('analysis_run') else []) + list(data.get('segment_runs', {}).values())
+    if data.get('workflow_feedback_run'):
+        ids.append(data['workflow_feedback_run'])
+    retried = []
+    with get_client(sync_client=True) as client:
+        for run_id in dict.fromkeys(ids):
+            run = client.read_flow_run(UUID(run_id))
+            if run.state and (run.state.is_failed() or run.state.is_crashed()):
+                result = client.set_flow_run_state(run.id, Scheduled(name='AwaitingRetry'), force=True)
+                if result.status.value != 'ACCEPT':
+                    raise Attention('native_retry_not_accepted')
+                retried.append(run_id)
+    return retried
 
 
 def audio_files(root: Path):
@@ -41,8 +69,13 @@ def submit_file(cfg: Settings, path: Path, *, canary=False):
         paths = data["sources"]
         if str(source) not in paths:
             manifest.update(sources=[*paths, str(source)])
+        if fully_processed(data):
+            return submission_receipt(manifest, {'recording_id': identity, 'run_id': data.get('analysis_run'),
+                                      'duplicate': True, 'skipped': 'already_processed'})
         if data.get("analysis_run"):
-            return {"run_id": data["analysis_run"], "duplicate": True}
+            retried = continue_runs(data)
+            return submission_receipt(manifest, {'recording_id': identity, 'run_id': data['analysis_run'],
+                                      'reused': True, 'retry_runs': retried})
         if not canary:
             if not cfg.enabled or not cfg.enabled_at:
                 raise Attention("ingestion_disabled")
@@ -61,7 +94,8 @@ def submit_file(cfg: Settings, path: Path, *, canary=False):
                 return {"retained_only": "historical_baseline"}
         run = run_deployment("analyze-recording/local", parameters={"path": str(source), "canary": canary}, timeout=0, idempotency_key="audio:" + identity)
         manifest.update(recording_id=identity, analysis_run=str(run.id))
-        return {"run_id": str(run.id), "recording_id": identity}
+        return submission_receipt(manifest, {"run_id": str(run.id), "recording_id": identity,
+                                  'reused_asr': (manifest.folder/'asr.json').exists()})
 
 
 def watch(cfg: Settings):

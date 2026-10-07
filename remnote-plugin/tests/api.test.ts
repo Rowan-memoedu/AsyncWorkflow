@@ -36,6 +36,33 @@ function fixture() {
 }
 const outline={text:'Title :: literal → $x^2$',children:[{text:'Reason',children:[{text:'Example',children:[]}]}]};
 
+describe('meeting date path',()=>{
+  it('reuses the existing date and meeting branch without creating anything',async()=>{
+    const f=fixture();f.parent.text=['内部会议预案'];f.parent.isDoc=true;
+    f.node('date',['10.7'],'parent').isDoc=true;f.node('meeting',['会议记录'],'date');
+    expect(await f.api.meeting('parent','2026-10-07')).toEqual({date_id:'date',parent_id:'meeting'});
+    expect(f.counts().creates).toBe(0);
+  });
+  it('creates the missing path once and publishes complete content with blank separators',async()=>{
+    const f=fixture();f.parent.text=['内部会议预案'];f.parent.isDoc=true;
+    const path=await f.api.meeting('parent','2026-10-08');
+    expect(await f.api.meeting('parent','2026-10-08')).toEqual(path);
+    expect(f.nodes.get(path.date_id).isDoc).toBe(true);
+    expect(f.nodes.get(path.parent_id).isDoc).toBe(false);
+    expect(f.counts().creates).toBe(2);
+    const first=await f.api.publish('call/part',path.parent_id,outline,'metadata only in logs');
+    expect((await f.api.publish('call/part',path.parent_id,outline,'metadata only in logs')).root_id).toBe(first.root_id);
+    expect((await f.nodes.get(path.parent_id).getChildrenRem()).map((n:any)=>n.text)).toEqual([[],[outline.text],[]]);
+  });
+  it('rejects invalid and ambiguous dates before writes',async()=>{
+    const f=fixture();f.parent.text=['内部会议预案'];f.parent.isDoc=true;
+    await expect(f.api.meeting('parent','2026-02-30')).rejects.toThrow('date_invalid');
+    f.node('one',['10.7'],'parent');f.node('two',['2026-10-07'],'parent');
+    await expect(f.api.meeting('parent','2026-10-07')).rejects.toThrow('meeting_date_ambiguous');
+    expect(f.counts().creates).toBe(0);
+  });
+});
+
 describe('owned write recovery',()=>{
   it('reuses a completed effect after its response is lost',async()=>{
     const f=fixture(); const first=await f.api.publish('record/part','parent',outline,'source');

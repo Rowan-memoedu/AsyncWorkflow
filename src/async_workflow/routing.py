@@ -104,6 +104,11 @@ async def choose_document(cfg, session, call, requested, content):
             'uncertainty':chosen.uncertainty,'reason':chosen.reason,'review_eligible':chosen.uncertainty=='high'}
 
 async def plan(cfg, session, call, requested, content, provenance, *, item=None):
+    if (item or {}).get('recording_type') == 'conversation':
+        if not cfg.meeting_document_id:
+            raise Attention('meeting_document_not_bound')
+        return {'type': 'meeting', 'document_id': cfg.meeting_document_id,
+                'recorded_day': recorded_day(provenance), 'requested': '', 'review_eligible': False}
     template, paths=snapshot(cfg)
     date=recorded_day(provenance)
     base={'requested':requested,'recorded_day':date,'template_version':template['version'],'routing_revision':ROUTING_REVISION}

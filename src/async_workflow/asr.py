@@ -12,7 +12,7 @@ import alibabacloud_oss_v2 as oss
 import httpx
 
 from .auth import access, require
-from .core import Attention, UnknownOutcome, Manifest, Settings, atomic, read_json, file_hash
+from .core import Attention, UnknownOutcome, Manifest, Settings, atomic, read_json, file_hash, now
 
 BASE = "https://dashscope.aliyuncs.com/api/v1"
 
@@ -72,12 +72,16 @@ def normalize_funasr(value: dict, recording_id: str) -> dict:
             if sentence['text'].startswith(previous['text']):
                 stable[-1] = sentence
                 continue
+            if previous['text'].startswith(sentence['text']):
+                # Cumulative SSE snapshots can arrive with a shorter prefix
+                # carrying a later end time. Keep the containing source text.
+                continue
             raise Attention('funasr_overlapping_revisions_require_review')
         if stable and sentence['start_ms'] < stable[-1]['end_ms']:
             raise Attention('funasr_overlapping_revisions_require_review')
         stable.append(sentence)
     return {'text':'\n'.join(s['text'] for s in stable), 'sentences':stable,
-            'model':'fun-asr-realtime', 'provider':'funasr', 'normalization_revision':'timed-prefix-v1',
+            'model':'fun-asr-realtime', 'provider':'funasr', 'normalization_revision':'timed-prefix-v2',
             'collapsed_snapshots':len(sentences)-len(stable),
             'source_sha256':recording_id, 'provider_status':value['status']}
 
@@ -101,25 +105,41 @@ def recognize(cfg: Settings, manifest: Manifest, source: Path) -> str:
             raise UnknownOutcome('funasr_submission_unknown_no_replay')
         if not cfg.transcription_cli.is_file():
             raise Attention('global_transcription_cli_missing')
-        manifest.update(asr={'provider':'funasr','model':'fun-asr-realtime',
-                             'submission':'unknown','output_dir':str(output),'cleaned':True})
+        stage={'provider':'funasr','model':'fun-asr-realtime',
+               'submission':'unknown','output_dir':str(output),'cleaned':True,
+               'started_at':now(), 'stdout_log':str(manifest.folder/'asr-cli.out.log'),
+               'stderr_log':str(manifest.folder/'asr-cli.err.log')}
+        manifest.update(asr=stage)
         temp = cfg.root / 'temp'
         temp.mkdir(parents=True, exist_ok=True)
         env = {**os.environ, 'TEMP':str(temp), 'TMP':str(temp), 'PYTHONIOENCODING':'utf-8'}
-        try:
-            reply = subprocess.run([sys.executable, str(cfg.transcription_cli), 'transcribe', str(source),
-                                    '--provider', 'funasr', '--output-dir', str(output)],
-                                   capture_output=True, timeout=3600, env=env)
-        except (subprocess.TimeoutExpired, OSError):
-            raise UnknownOutcome('funasr_submission_unknown_no_replay') from None
-        if reply.returncode and not raw_path.exists():
+        with open(stage['stdout_log'],'ab') as stdout, open(stage['stderr_log'],'ab') as stderr:
+            try:
+                process = subprocess.Popen([sys.executable, str(cfg.transcription_cli), 'transcribe', str(source),
+                                            '--provider', 'funasr', '--output-dir', str(output)],
+                                           stdout=stdout, stderr=stderr, env=env)
+            except OSError as exc:
+                stage.update(submission='not_started',startup_error_type=type(exc).__name__)
+                manifest.update(asr=stage)
+                raise Attention('funasr_local_process_not_started') from None
+            stage['pid']=process.pid
+            manifest.update(asr=stage)
+            try:
+                code=process.wait(timeout=3600)
+            except subprocess.TimeoutExpired:
+                # Retain PID and durable logs. A later receipt can be reused;
+                # timeout never authorizes a second provider submission.
+                raise UnknownOutcome('funasr_submission_unknown_no_replay') from None
+            stage.update(exit_code=code,finished_at=now())
+            manifest.update(asr=stage)
+        if code and not raw_path.exists():
             raise Attention('funasr_cli_failed_receipt_retained')
     result = normalize_funasr(read_json(raw_path), manifest.folder.name)
     if file_hash(source) != manifest.folder.name:
         raise Attention('funasr_source_changed')
     atomic(manifest.folder / 'asr.json', result)
     atomic(manifest.folder / 'transcript.txt', result['text'], text=True)
-    manifest.update(asr={'provider':'funasr','model':result['model'],'submission':'completed',
+    manifest.update(asr={**stage,'provider':'funasr','model':result['model'],'submission':'completed',
                          'output_dir':str(output),'raw_receipt':str(raw_path),'cleaned':True})
     return result['text']
 

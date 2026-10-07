@@ -100,6 +100,36 @@ export class WorkflowAPI {
     await this.plugin.storage.setLocal(cacheKey,result);
     return result;
   }
+  async meeting(documentId:string,date:string) {
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('date_invalid');
+    const [year,month,day]=date.split('-').map(Number);
+    const check=new Date(year,month-1,day,12);
+    if(check.getFullYear()!==year||check.getMonth()!==month-1||check.getDate()!==day)throw new Error('date_invalid');
+    const root=await this.rem(documentId);
+    if(!await root.isDocument() || await this.title(root)!=='内部会议预案')throw new Error('meeting_document_changed');
+    const dates=[];
+    for(const child of await root.getChildrenRem()) {
+      const title=await this.title(child);
+      if(title===date || title===`${month}.${day}`) dates.push(child);
+    }
+    if(dates.length>1)throw new Error('meeting_date_ambiguous');
+    let dateRem=dates[0];
+    if(!dateRem) {
+      const created=await this.createDocument(`meeting/${documentId}/${date}`,date,documentId);
+      dateRem=await this.rem(created.document_id!);
+    }
+    const branches=[];
+    for(const child of await dateRem.getChildrenRem())if(await this.title(child)==='会议记录')branches.push(child);
+    if(branches.length>1)throw new Error('meeting_branch_ambiguous');
+    let parent=branches[0];
+    if(!parent) {
+      const recordKey=key(`meeting-branch:${documentId}:${dateRem._id}`);
+      const saved=await this.plugin.storage.getLocal<NodeState>(recordKey);
+      const state=await this.ensureNode(recordKey,saved,dateRem._id,['会议记录']);
+      parent=await this.rem(state.id!);
+    }
+    return {date_id:dateRem._id,parent_id:parent._id};
+  }
   private async ensureNode(recordKey:string,state:NodeState|undefined,parent:string|null,text:RichTextInterface) {
     if(!state) {
       state={phase:'creating',parent,text};
@@ -298,13 +328,14 @@ export class WorkflowAPI {
   }
   async dispatch(method:string,args:any) {
     switch(method) {
-      case 'status': return {connected:true,protocol:1,plugin_version:'0.1.5',kb_id:(await this.plugin.kb.getCurrentKnowledgeBaseData())._id};
+      case 'status': return {connected:true,protocol:1,plugin_version:'0.1.6',kb_id:(await this.plugin.kb.getCurrentKnowledgeBaseData())._id};
       case 'template_snapshot': return this.snapshot(args.rem_id);
       case 'targets_snapshot': return this.snapshot(args.rem_id,'targets');
       case 'search_documents': return this.search(args.queries);
       case 'create_document': return this.createDocument(args.effect_key,args.title,args.parent_id??null);
       case 'resolve_todo': return this.todo(args.category,args.software);
       case 'resolve_daily': return this.daily(args.date,args.branch_path);
+      case 'resolve_meeting': return this.meeting(args.document_id,args.date);
       case 'relocate_outline': return this.relocate(args.effect_key,args.operation_id,args.parent_id,args.trash_id,args.strip_metadata??true);
       case 'publish_outline': return this.publish(args.effect_key,args.parent_id,args.tree,args.metadata);
       default: throw new Error('unsupported_method');

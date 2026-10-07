@@ -57,6 +57,10 @@ def main():
     submit = commands.add_parser("submit")
     submit.add_argument("path")
     submit.add_argument("--canary", action="store_true")
+    batch = commands.add_parser('batch')
+    batch.add_argument('--latest', type=int, required=True)
+    batch.add_argument('--cutoff')
+    batch.add_argument('--manual', action='store_true')
     resume = commands.add_parser("resume")
     resume.add_argument("run_id")
     resume.add_argument("--answer", required=True)
@@ -116,6 +120,15 @@ def main():
             cfg.enabled = False
         cfg.save()
         print(json.dumps({"enabled": cfg.enabled, "enabled_at": cfg.enabled_at}))
+    elif args.command == 'batch':
+        from datetime import datetime
+        from .batch import recent, run
+        if not 1 <= args.latest <= 100:
+            raise Attention('batch_count_out_of_range')
+        cutoff=datetime.fromisoformat(args.cutoff) if args.cutoff else None
+        if cutoff and cutoff.tzinfo is None:
+            raise Attention('batch_cutoff_timezone_required')
+        print(json.dumps({'receipt':str(run(cfg,recent(cfg,args.latest,cutoff),manual=args.manual))}))
     elif args.command == "submit":
         from .ingest import submit_file
         print(json.dumps(submit_file(cfg, Path(args.path), canary=args.canary), default=str))

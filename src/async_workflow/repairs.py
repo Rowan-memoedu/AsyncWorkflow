@@ -44,7 +44,11 @@ def prepare(cfg,store,stage,operation):
     transcript=read_json(store.folder/'asr.json')
     if not transcript or not transcript.get('text'): raise Attention('successful_source_transcript_required')
     old=before['segments']
-    if stage=='split':
+    if before.get('recording_type') == 'conversation':
+        # Meeting speech is always complete archival data, even on a repair.
+        # Container-command extraction and the normal command splitter do not apply.
+        parts=[dict(p) for p in old]
+    elif stage=='split':
         outline=(store.folder/'outline.md').read_text(encoding='utf-8')
         feedback_plan=read_json(store.folder/'feedback.json')
         text=transcript['text']

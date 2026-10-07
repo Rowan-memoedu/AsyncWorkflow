@@ -12,6 +12,7 @@ from prefect.input import RunInput
 from pydantic import Field
 
 from . import asr, executor, remnote, splitter, feedback
+from . import recording_types
 from .core import Settings, Manifest, Attention, UnknownOutcome, atomic, digest, file_hash, safe_source, source_metadata, probe, eligibility, read_json
 
 
@@ -45,10 +46,13 @@ def analyze_recording(path: str, canary: bool = False):
         if str(source) not in paths:
             paths.append(str(source))
         manifest.update(recording_id=recording_id, sources=paths)
+    if recording_types.fully_processed(data):
+        return {'recording_id': recording_id, 'skipped': 'already_processed'}
     duration = probe(source, cfg.ffprobe)
-    provenance = source_metadata(source, cfg)
-    reason = eligibility(source.name, duration, provenance.get("source_type"))
-    manifest.update(duration=duration, eligibility=reason, original_name=source.name, provenance=provenance)
+    provenance = recording_types.recording_provenance(source.name, source_metadata(source, cfg))
+    recording_kind, reason = recording_types.kind(cfg, source.name, duration, provenance)
+    manifest.update(duration=duration, eligibility=reason, original_name=source.name, provenance=provenance,
+                    recording_type=recording_kind, type_standard=digest(cfg.recording_types.read_bytes()))
     if reason != "eligible":
         return {"recording_id": recording_id, "retained_only": reason}
     if not canary and not cfg.enabled:
@@ -57,18 +61,28 @@ def analyze_recording(path: str, canary: bool = False):
         parts = data["segments"]
     else:
         text = asr.recognize(cfg, manifest, source)
-        feedback_plan = feedback.prepare(cfg, manifest, text)
-        text = feedback_plan['remaining_text']
-        outline = outline_task(text, cfg.deepseek_model, splitter.PROMPT_HASH, splitter.REFINE_REVISION) if text.strip() else ''
+        if recording_kind == 'ordinary':
+            verdict = recording_types.confirm_self(cfg, manifest, text)
+            if verdict != 'single_self':
+                manifest.update(eligibility='not_single_self:' + verdict)
+                return {'recording_id': recording_id, 'retained_only': 'not_single_self:' + verdict}
+            feedback_plan = feedback.prepare(cfg, manifest, text)
+            text = feedback_plan['remaining_text']
+        else:
+            feedback_plan = {'extractor_revision': 'meeting-no-execution'}
+        refine = lambda body: recording_types.cached_outline(cfg, manifest, body,
+            lambda value: outline_task(value, cfg.deepseek_model, splitter.PROMPT_HASH, splitter.REFINE_REVISION))
+        outline = refine(text) if text.strip() else ''
         atomic(manifest.folder / "outline.md", outline, text=True)
-        parts = split_task(text, outline, cfg.deepseek_model, digest(splitter.SYSTEM)) if text.strip() else []
+        parts = ([recording_types.conversation_part(recording_id, text, outline)] if recording_kind == 'conversation'
+                 else split_task(text, outline, cfg.deepseek_model, digest(splitter.SYSTEM)) if text.strip() else [])
         version = {"audio": recording_id, "asr":read_json(manifest.folder/'asr.json',{}).get('model',cfg.asr_model), "model":cfg.deepseek_model, "prompt":splitter.PROMPT_HASH, "refine_adapter":splitter.REFINE_REVISION, "splitter":digest(splitter.SYSTEM), "feedback":feedback_plan['extractor_revision'], "schema":1}
         version_id = digest(json.dumps(version, sort_keys=True))
         for item in parts:
-            item["key"] = digest(recording_id + ":" + data.get('source_revision','') + str(item["source_spans"]))[:24]
+            item.setdefault("key", digest(recording_id + ":" + data.get('source_revision','') + str(item["source_spans"]))[:24])
             body = item.get('content_text', item['raw_text'])
             item["markdown"] = (outline if len(parts) == 1 and body == text else
-                                outline_task(body, cfg.deepseek_model, splitter.PROMPT_HASH, splitter.REFINE_REVISION) if body.strip() else '')
+                                refine(body) if body.strip() else '')
             atomic(manifest.folder / (item["key"] + ".md"), item["markdown"], text=True)
             atomic(manifest.folder / (item["key"] + ".json"), {"recording":{"id":recording_id, "audio":str(source), "duration":duration, **provenance}, "analysis_version":version_id, "segment":{k:v for k,v in item.items() if k != "markdown"}})
         atomic(manifest.folder / "analysis-version.json", version)

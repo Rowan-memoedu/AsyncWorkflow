@@ -177,7 +177,7 @@ def test_new_analysis_routes_feedback_separately_from_ordinary_notes(setup,monke
     from async_workflow import flows
     from async_workflow.core import atomic,digest
     cfg,store,_=setup
-    source=cfg.inbox/'recording.mp3'
+    source=cfg.inbox/'10-07-2026 12.00.mp3'
     source.write_bytes(b'fixture recording')
     text=notes+'以后转写保留英文术语。'
     extracted=feedback.partition(feedback.FeedbackPartition(
@@ -188,6 +188,7 @@ def test_new_analysis_routes_feedback_separately_from_ordinary_notes(setup,monke
     monkeypatch.setattr(flows,'probe',lambda *a:30)
     monkeypatch.setattr(flows,'source_metadata',lambda *a:{})
     monkeypatch.setattr(flows,'eligibility',lambda *a:'eligible')
+    monkeypatch.setattr(flows.recording_types,'confirm_self',lambda *a:'single_self')
     monkeypatch.setattr(flows.asr,'recognize',lambda *a:text)
     def extract(*a):
         atomic(store.folder/'feedback.json',extracted)

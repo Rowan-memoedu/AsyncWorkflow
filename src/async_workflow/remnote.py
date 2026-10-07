@@ -66,6 +66,9 @@ async def sync_targets(cfg):
     return result
 
 async def resolve_target(cfg,session,route,recording_id):
+    if route['type']=='meeting':
+        target=await call(session,'resolve_meeting',document_id=route['document_id'],date=route['recorded_day'])
+        return {'parent':target['parent_id'],'meeting_date_id':target['date_id']}
     if route['type']=='daily':
         target=await call(session,'resolve_daily',date=route['recorded_day'],branch_path=route['branch_path'])
         return {'parent':target['parent_id'],'daily_id':target['daily_id']}

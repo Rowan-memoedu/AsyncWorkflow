@@ -98,6 +98,9 @@ class Settings(BaseModel):
     command_workspace: Path = Path('D:/Workspaces/新建文件夹')
     command_project_id: str = ''
     feedback_thread_id: str = ''
+    meeting_document_id: str = ''
+    conversation_contacts: list[str] = Field(default_factory=list)
+    recording_types: Path = Path('D:/Projects/AsyncWorkflow/docs/recording-types.md')
     script_actions: dict[str, dict] = Field(default_factory=dict)
     enabled: bool = False
     enabled_at: str | None = None
@@ -153,7 +156,7 @@ def eligibility(name: str, duration: float, source_type: str | None = None) -> s
         return "name_not_datetime"
     if not 0 < duration < float("inf"):
         raise Attention("duration_unknown")
-    return "eligible" if duration <= 1200 else "over_duration"
+    return "eligible" if duration < 1200 else "over_duration"
 
 
 def source_metadata(path: Path, cfg: Settings) -> dict:

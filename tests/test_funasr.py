@@ -37,6 +37,36 @@ def test_unknown_submission_is_not_blindly_repeated(setup):
     with pytest.raises(UnknownOutcome): asr.recognize(cfg,store,source)
 
 
+def test_local_launch_failure_is_logged_as_not_submitted(setup,monkeypatch):
+    cfg,store,source,_=setup
+    cfg.transcription_cli=store.folder/'public-cli.py';cfg.transcription_cli.write_text('print(1)')
+    def fail(*a,**k): raise FileNotFoundError('local launch failed')
+    monkeypatch.setattr(asr.subprocess,'Popen',fail)
+    with pytest.raises(Attention,match='local_process_not_started'):
+        asr.recognize(cfg,store,source)
+    assert store.read()['asr']['submission']=='not_started'
+    assert (store.folder/'asr-cli.err.log').exists()
+
+
+def test_unknown_provider_failure_keeps_pid_exit_and_logs_without_replay(setup,monkeypatch):
+    cfg,store,source,_=setup
+    cfg.transcription_cli=store.folder/'public-cli.py';cfg.transcription_cli.write_text('print(1)')
+    class Process:
+        pid=42
+        def wait(self,timeout): return 1
+    calls=[]
+    def launch(*a,**k):
+        calls.append(a)
+        k['stderr'].write(b'public failure evidence\n')
+        return Process()
+    monkeypatch.setattr(asr.subprocess,'Popen',launch)
+    with pytest.raises(Attention,match='cli_failed'): asr.recognize(cfg,store,source)
+    with pytest.raises(UnknownOutcome): asr.recognize(cfg,store,source)
+    stage=store.read()['asr']
+    assert stage['pid']==42 and stage['exit_code']==1 and len(calls)==1
+    assert 'public failure' in (store.folder/'asr-cli.err.log').read_text()
+
+
 def test_wrong_source_receipt_cannot_replace_transcript(setup):
     cfg,store,source,raw=setup
     raw['source_sha256']='b'*64
@@ -63,6 +93,16 @@ def test_real_repeated_speech_at_different_times_is_preserved(setup):
     raw['text']='Again.\nAgain.'
     result=asr.normalize_funasr(raw,store.folder.name)
     assert result['text']==raw['text'] and result['collapsed_snapshots']==0
+
+
+def test_shorter_cumulative_prefix_with_later_timestamp_keeps_complete_text(setup):
+    _,store,_,raw=setup
+    raw['utterances']=[{'start_ms':100,'end_ms':500,'text':'First. Second.'},
+                      {'start_ms':100,'end_ms':900,'text':'First.'},
+                      {'start_ms':100,'end_ms':1800,'text':'First. Second. Third.'}]
+    raw['text']='\n'.join(s['text'] for s in raw['utterances'])
+    result=asr.normalize_funasr(raw,store.folder.name)
+    assert result['text']=='First. Second. Third.' and result['collapsed_snapshots']==2
 
 
 def test_conflicting_overlapping_speech_is_not_silently_rewritten(setup):
