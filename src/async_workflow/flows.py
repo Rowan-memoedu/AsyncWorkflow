@@ -12,7 +12,7 @@ from prefect.input import RunInput
 from pydantic import Field
 
 from . import asr, executor, remnote, splitter, feedback
-from . import recording_types
+from . import recording_types, conversation
 from .core import Settings, Manifest, Attention, UnknownOutcome, atomic, digest, file_hash, safe_source, source_metadata, probe, eligibility, read_json
 
 
@@ -60,19 +60,22 @@ def analyze_recording(path: str, canary: bool = False):
     if data.get("segments"):
         parts = data["segments"]
     else:
-        text = asr.recognize(cfg, manifest, source)
-        if recording_kind == 'ordinary':
+        if recording_kind == 'conversation':
+            transcript, outline = conversation.prepare(cfg, manifest, source)
+            text = transcript['text']
+            feedback_plan = {'extractor_revision': 'meeting-no-execution'}
+        else:
+            text = asr.recognize(cfg, manifest, source)
             verdict = recording_types.confirm_self(cfg, manifest, text)
             if verdict != 'single_self':
                 manifest.update(eligibility='not_single_self:' + verdict)
                 return {'recording_id': recording_id, 'retained_only': 'not_single_self:' + verdict}
             feedback_plan = feedback.prepare(cfg, manifest, text)
             text = feedback_plan['remaining_text']
-        else:
-            feedback_plan = {'extractor_revision': 'meeting-no-execution'}
         refine = lambda body: recording_types.cached_outline(cfg, manifest, body,
             lambda value: outline_task(value, cfg.deepseek_model, splitter.PROMPT_HASH, splitter.REFINE_REVISION))
-        outline = refine(text) if text.strip() else ''
+        if recording_kind != 'conversation':
+            outline = refine(text) if text.strip() else ''
         atomic(manifest.folder / "outline.md", outline, text=True)
         parts = ([recording_types.conversation_part(recording_id, text, outline)] if recording_kind == 'conversation'
                  else split_task(text, outline, cfg.deepseek_model, digest(splitter.SYSTEM)) if text.strip() else [])

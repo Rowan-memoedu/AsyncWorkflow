@@ -100,6 +100,7 @@ class Settings(BaseModel):
     feedback_thread_id: str = ''
     meeting_document_id: str = ''
     conversation_contacts: list[str] = Field(default_factory=list)
+    conversation_channel_profiles: dict[str, dict[str, str]] = Field(default_factory=dict)
     recording_types: Path = Path('D:/Projects/AsyncWorkflow/docs/recording-types.md')
     script_actions: dict[str, dict] = Field(default_factory=dict)
     enabled: bool = False

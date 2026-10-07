@@ -9,12 +9,12 @@ from pathlib import Path
 from filelock import FileLock
 from prefect import flow
 from prefect.runtime import flow_run
-from . import remnote, routing, splitter
+from . import remnote, routing, splitter, conversation, conversation_asr, recording_types
 from .core import Settings, Manifest, Attention, atomic, digest, read_json, now
 
 
 def identity(cfg, recording_id, stage):
-    if stage not in ('split','content','routing','publish'): raise Attention('unknown_repair_stage')
+    if stage not in ('split','content','routing','publish','meeting'): raise Attention('unknown_repair_stage')
     versions={
         'recording':recording_id,'stage':stage,
         'repair':digest(Path(__file__).read_bytes()),
@@ -23,12 +23,14 @@ def identity(cfg, recording_id, stage):
         'template':read_json(cfg.root/'daily-template.json',{}).get('version'),
         'targets':read_json(cfg.root/'todo-targets.json',{}).get('version'),
         'format':'content-with-separators',
+        'meeting': [conversation.POLICY, conversation_asr.REVISION, cfg.conversation_channel_profiles,
+                    digest(cfg.prompt.read_bytes()),cfg.deepseek_model] if stage=='meeting' else None,
     }
     return digest(json.dumps(versions,sort_keys=True))[:24]
 
 
 def prepare(cfg,store,stage,operation):
-    if stage not in ('split','content','routing','publish'): raise Attention('unknown_repair_stage')
+    if stage not in ('split','content','routing','publish','meeting'): raise Attention('unknown_repair_stage')
     folder=store.folder/'repairs'/operation
     for prior in folder.parent.glob('*/before.json'):
         if prior.parent != folder and not read_json(prior.parent/'plan.json',{}).get('completed'):
@@ -41,10 +43,21 @@ def prepare(cfg,store,stage,operation):
         atomic(folder/'before.json',before)
     existing=read_json(folder/'plan.json')
     if existing: return folder,before,existing
-    transcript=read_json(store.folder/'asr.json')
+    transcript=(read_json(Path(before['conversation_transcript'])) if before.get('conversation_transcript')
+                else read_json(store.folder/'asr.json'))
     if not transcript or not transcript.get('text'): raise Attention('successful_source_transcript_required')
     old=before['segments']
-    if before.get('recording_type') == 'conversation':
+    meeting_refinements = 0
+    reused_asr = True
+    if stage == 'meeting':
+        if before.get('recording_type') != 'conversation':
+            raise Attention('meeting_repair_requires_conversation')
+        reused_asr = bool(before.get('conversation_transcript'))
+        outlines_before = set((store.folder/'conversation').glob('outline-*.json'))
+        transcript, markdown = conversation.prepare(cfg,store,Path(before['sources'][0]))
+        meeting_refinements = len(set((store.folder/'conversation').glob('outline-*.json'))-outlines_before)
+        parts=[recording_types.conversation_part(store.folder.name,transcript['text'],markdown)]
+    elif before.get('recording_type') == 'conversation':
         # Meeting speech is always complete archival data, even on a repair.
         # Container-command extraction and the normal command splitter do not apply.
         parts=[dict(p) for p in old]
@@ -61,24 +74,24 @@ def prepare(cfg,store,stage,operation):
     else: parts=[dict(p) for p in old]
     if any(p['kind']=='command' for p in parts): raise Attention('repair_will_not_create_or_replay_commands')
     used=set()
-    refinements=0
+    refinements=meeting_refinements
     for part in parts:
         origin=next((p for p in old if p['raw_text']==part['raw_text']),None)
         if origin: part['source_effect']=origin['key']
         same=next((p for p in old if p['index'] not in used and p['raw_text']==part['raw_text']
                    and p.get('content_text',p['raw_text'])==part.get('content_text',part['raw_text'])),None)
-        if same:
+        if same and stage!='meeting':
             used.add(same['index'])
             part['markdown']=same['markdown']
             part['reuses_effect']=same['key']
-        else:
+        elif stage!='meeting':
             part.pop('reuses_effect',None)
             body=part.get('content_text',part['raw_text'])
             part['markdown']=splitter.refine(cfg,body) if body.strip() else ''
             refinements+=1
         part['key']=digest(store.folder.name+operation+str(part['source_spans']))[:24]
     plan={'operation':operation,'stage':stage,'at':now(),'source_transcript_hash':digest(transcript['text']),
-          'reused_asr':True,'new_outline_calls':refinements,'segments':parts,'routes':{},'corrections':{},'archived':{}}
+          'reused_asr':reused_asr,'new_outline_calls':refinements,'segments':parts,'routes':{},'corrections':{},'archived':{}}
     atomic(folder/'plan.json',plan)
     return folder,before,plan
 
@@ -176,6 +189,6 @@ def repair_recording(recording_id:str,stage:str,operation_id:str):
         plan['completed_at']=now()
         plan['flow_run_id']=str(flow_run.id)
         atomic(folder/'plan.json',plan)
-        return {'operation':operation_id,'completed':True,'reused_asr':True,'new_outline_calls':plan['new_outline_calls'],
+        return {'operation':operation_id,'completed':True,'reused_asr':plan['reused_asr'],'new_outline_calls':plan['new_outline_calls'],
                 'roots':[v['root_id'] for v in plan['corrections'].values() if v.get('status')=='verified' and v.get('root_id')],
                 'kept_removed':[v['root_id'] for v in plan['corrections'].values() if v.get('reason')=='user_kept_removed_output']}

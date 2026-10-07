@@ -1,6 +1,8 @@
 # AsyncWorkflow
 
-2026-10-07 增量：独立插件 0.1.6 已加载，支持会议日期路径补建。最近五条均已完成或跳过；12:11 通话的未知转写提交经用户授权重试后完成，32 个节点归入会议记录并独立回读。172 项 Python 测试及 39 项插件测试通过。按用户明确授权，新增录音自动处理于北京时间 14:02:06 开启，监控已读回启用状态；后续按用户要求改为每半小时扫描一次。下一条真实手机新增录音的上传到归档链路仍待观察。本机验收位于 `D:/Artifacts/AsyncWorkflow/2026-10-07/recording-types/结果.md`。
+2026-10-07 增量：交流录音已接入独立声道 FUN-ASR、昵称与词级时间戳，整理为共识、继续讨论、无用的闲聊；沿用冻结整理提示词和独立 RemNote 插件 0.1.6。182 项 Python 测试及独立公开样例通过；插件未改动，此前 39 项插件测试结果继续保留。用户已确认当前成果可行，后续保持必要的格式校验、去重和写入回读，不增加额外模型审核或为细微表达反复重跑。本轮记录位于 `D:/Artifacts/AsyncWorkflow/2026-10-07/meeting-stereo/结果.md`。
+
+新增录音自动处理于北京时间 14:02:06 开启，每半小时扫描一次。最近五条均已完成或跳过；既有类型准入验收见 `D:/Artifacts/AsyncWorkflow/2026-10-07/recording-types/结果.md`。下一条真实手机新增录音的上传到归档链路仍待观察。
 
 Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → 阿里云 FUN-ASR → 原结构化提示词 / DeepSeek → 语义分块与操作指令分离 → 独立 RemNote 插件、官方 Codex App Server 或已配置 CLI。
 
@@ -8,7 +10,7 @@ Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → 阿里�
 
 ## 边界
 
-- 录音类型标准见 [本地 Markdown](docs/recording-types.md)：普通日期录音须短于 20 分钟且确认为单人自述；已确认对象的微信／电话等交流录音不限该时长，整块沿用原提示词整理并归入会议日期的“会议记录”，不区分对话人、不执行会议内命令。
+- 录音类型标准见 [本地 Markdown](docs/recording-types.md)：普通日期录音须短于 20 分钟且确认为单人自述；交流录音不限该时长，按已核验的双声道映射昵称，FUN-ASR 保留词级时间戳并合回发言顺序。沿用原整理规范，固定输出“共识、继续讨论、无用的闲聊”；共识不标说话人，未被反驳的观点也收入，未决问题与明确分歧单列。完整内容归入会议日期的“会议记录”，不执行会议内命令。
 - `batch --latest 5 --manual` 按录音时间顺序处理有限批次，不打开自动入口；`--cutoff` 可冻结批次选择范围。完整结果跳过，失败重试同一个 Prefect 任务，转写／结构化／归档成功环节复用；提交结论保留在各录音 manifest 的 `submission_log`。
 
 - 新命令通过官方 `openai-codex` SDK 创建持久 Thread，先保存 Thread ID，再提交并保存 Turn ID。用户直接在该 Thread 继续；桌面持有写入权时不创建替代 Thread。
@@ -62,6 +64,8 @@ Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → 阿里�
 ## 按失败环节修复
 
 使用 `python -m async_workflow.cli repair <recording_id> --from split|content|routing|publish` 提交原生 Prefect 修复 flow。`split` 复用原 ASR，仅为重新分出的内容生成大纲；`content` 保持分块和目标，只重新区分操作语句与正文，正文未变则复用；`routing` 只重新选择去处并迁移；`publish` 只修复输出格式。均不重新转写，也不自动重放命令。
+
+用户明确要求交流录音重新整理时，使用 `--from meeting`：首次补齐缺少的独立声道转写；此后按声道分片复用成功回执，原混合转写保留。三个分支与源发言覆盖通过校验后发布，旧整体再移入 Trash；重复提交沿用同一修复身份。声道昵称映射保存在本机 `conversation_channel_profiles`，按已核验的文件名模式匹配，未知来源或非双声道不猜身份。词级时间戳直接读取同一 FUN-ASR HTTP 接口；既有文本 CLI 省略此字段，因此交流专用适配层保留原生回执，普通录音仍复用原 CLI。
 
 已明确确认另一份 FUN-ASR 转写时，用 `accept-asr <recording_id> --receipt <raw.json> --decision <用户的确认>` 接回下游。先核对音频哈希、旧 flow 均已终止、旧输出已归档且没有已启动的 Thread；保留原转写和旧效果。它导入现有结果，不重新调用 ASR；带修订身份提交原生 Prefect 分析，重复确认不重复执行。
 

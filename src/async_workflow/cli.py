@@ -39,7 +39,7 @@ def main():
     commands.add_parser("sync-targets")
     repair = commands.add_parser("repair")
     repair.add_argument("recording_id")
-    repair.add_argument("--from", dest="stage", choices=("split","content","routing","publish"), required=True)
+    repair.add_argument("--from", dest="stage", choices=("split","content","routing","publish","meeting"), required=True)
     feedback_command = commands.add_parser('feedback')
     feedback_command.add_argument('recording_id')
     accepted = commands.add_parser('accept-asr')

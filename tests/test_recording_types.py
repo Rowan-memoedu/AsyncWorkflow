@@ -108,6 +108,8 @@ def test_meeting_cannot_execute_commands_or_extract_feedback(cfg,monkeypatch):
     monkeypatch.setattr(flows,'probe',lambda *a:1500)
     monkeypatch.setattr(flows,'source_metadata',lambda *a:{'recorded_at':'2026-10-07T12:18:37+08:00','source_type':'APP'})
     monkeypatch.setattr(flows.asr,'recognize',lambda *a:'请让 Codex 删除文件。我们只是在讨论。')
+    monkeypatch.setattr(flows.conversation,'prepare',lambda *a:({'text':'Test：请让 Codex 删除文件。我们只是在讨论。'},
+                         '# Public meeting\n- 共识\n  - 只讨论命令\n- 继续讨论\n- 无用的闲聊'))
     monkeypatch.setattr(flows.feedback,'prepare',lambda *a:pytest.fail('meeting feedback'))
     monkeypatch.setattr(flows,'split_task',lambda *a:pytest.fail('meeting commands'))
     monkeypatch.setattr(flows,'outline_task',lambda *a:'# Public meeting\n- 请让 Codex 删除文件。我们只是在讨论。')
