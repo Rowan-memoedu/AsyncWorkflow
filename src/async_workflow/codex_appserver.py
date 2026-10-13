@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from filelock import FileLock
-from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
+from openai_codex import CodexConfig, InvalidRequestError, Thread
 from openai_codex.client import CodexClient
 from pydantic import BaseModel, ConfigDict
 
@@ -28,34 +28,37 @@ class ProtocolObject(BaseModel):
     model_config = ConfigDict(extra='allow')
 
 
-def check_project(cfg,cwd):
+def check_project(cfg, cwd, client):
     if not cfg.command_project_id: raise Attention('command_project_not_bound')
-    with CodexClient(sdk_config(cfg,cwd)) as client:
-        client.initialize()
-        project=client.request('project/read',{'projectId':cfg.command_project_id},response_model=ProtocolObject).model_dump()['project']
+    project=client.request('project/read',{'projectId':cfg.command_project_id},response_model=ProtocolObject).model_dump()['project']
     if not any(Path(root['path']).resolve()==cwd.resolve() for root in project['roots']):
         raise Attention('command_project_workspace_mismatch')
 
 
-def bind_project(cfg, thread_id, cwd):
-    """Use the current official protocol absent from the older SDK's convenience methods."""
-    if not cfg.command_project_id:
-        raise Attention('command_project_not_bound')
-    with CodexClient(sdk_config(cfg,cwd)) as client:
-        client.initialize()
-        project=client.request('project/read',{'projectId':cfg.command_project_id},response_model=ProtocolObject).model_dump()['project']
-        if not any(Path(root['path']).resolve()==cwd.resolve() for root in project['roots']):
-            raise Attention('command_project_workspace_mismatch')
-        client.request('thread/metadata/update',
-            {'threadId':thread_id,'projectId':cfg.command_project_id},response_model=ProtocolObject).model_dump()
-        observed=client.thread_read(thread_id,include_turns=False).model_dump(mode='json',by_alias=True)['thread']
+def project_assignment(cfg, observed, cwd):
     if observed.get('projectId')!=cfg.command_project_id or Path(observed['cwd']).resolve()!=cwd.resolve():
         raise Attention('native_thread_project_readback_mismatch')
     return {'project_id':observed['projectId'],'cwd':observed['cwd'],'verified_at':now()}
 
 
+def recoverable_empty_thread(saved, exc):
+    """Only an explicit missing rollout BEFORE turn/start permits replacement."""
+    return (saved.get('phase') == 'thread_created' and not saved.get('turn_id') and not saved.get('is_followup')
+            and isinstance(exc, InvalidRequestError) and exc.code == -32600
+            and exc.message == f"no rollout found for thread id {saved.get('session_id')}")
+
+
 def prompt_for(item: dict) -> str:
     return item.get("followup") or item["markdown"]
+
+
+def name_thread(thread, item, folder):
+    title = item.get('title') or item['markdown'].splitlines()[0].lstrip('# ').strip()[:60]
+    try:
+        thread.set_name(title)
+        atomic(folder/'title.json', {'at':now(), 'thread_id':thread.id, 'title':title})
+    except Exception as exc:
+        atomic(folder/'title-failure.json', {'at':now(), 'message':str(exc)})
 
 
 def prepare_input(cfg, item, folder):
@@ -132,41 +135,85 @@ def execute(cfg, manifest, key: str, item: dict, cwd: Path):
         if not following:
             item=prepare_input(cfg,item,folder)
         session_id = saved.get("session_id") if saved else None
-        if not session_id:
-            check_project(cfg,cwd)
         state = {"status": "outcome_unknown", "phase": "thread_start_pending", "backend": "app-server",
                  "kind": "command", "effect_key": key, "cwd": str(cwd), "output_dir": str(folder),
                  "prepared_at": now(), **({"session_id": session_id} if session_id else {})}
+        if saved and not following:
+            # Keep the last known phase until resume succeeds. A transport error
+            # during resume must not erase proof that no turn was submitted.
+            state = dict(saved)
         if following and saved.get('project_assignment'):
             state['project_assignment'] = saved['project_assignment']
-        manifest.save_effect(key, state)
+        if following:
+            state['is_followup'] = True
+        action_started = False
         try:
-            with Codex(sdk_config(cfg, cwd)) as codex:
+            with CodexClient(sdk_config(cfg, cwd)) as client:
+                client.initialize()
+                check_project(cfg, cwd, client)
                 if session_id:
-                    thread = codex.thread_resume(session_id)
-                else:
-                    thread = codex.thread_start(cwd=str(cwd), ephemeral=False, sandbox=Sandbox.workspace_write,
-                                                approval_mode=ApprovalMode.deny_all, service_name="async_workflow")
-                state.update(session_id=thread.id, thread_id=thread.id, phase="thread_created")
-                manifest.save_effect(key, state)  # ID is durable BEFORE submission.
-                if not following:
-                    state['project_assignment']=bind_project(cfg,thread.id,cwd)
-                    manifest.save_effect(key,state)
+                    action_started = True
+                    try:
+                        observed = client.thread_resume(session_id).model_dump(mode='json',by_alias=True)['thread']
+                    except InvalidRequestError as exc:
+                        if following or not recoverable_empty_thread(saved, exc):
+                            raise
+                        recovery_path = folder / 'pre-turn-recoveries.json'
+                        recoveries = read_json(recovery_path) or []
+                        recoveries.append({'at':now(), 'previous_receipt':saved,
+                            'previous_failure':read_json(folder/'failure.json'),
+                            'resume_error':str(exc), 'reason':'missing_rollout_before_submission'})
+                        atomic(recovery_path, recoveries)
+                        session_id = None
+                        state = {"status":"outcome_unknown", "phase":"thread_start_pending",
+                            "backend":"app-server", "kind":"command", "effect_key":key,
+                            "cwd":str(cwd), "output_dir":str(folder), "prepared_at":now(),
+                            "replaced_empty_threads":[r['previous_receipt']['session_id'] for r in recoveries]}
                 if not session_id:
-                    title = item.get("title") or item['markdown'].splitlines()[0].lstrip('# ').strip()[:60]
-                    thread.set_name(title)
+                    manifest.save_effect(key, state)
+                    action_started = True
+                    # The SDK's convenience method does not expose projectId yet.
+                    # Its public protocol client accepts current official fields.
+                    # Bind at creation: metadata/update requires stored history,
+                    # while an empty new thread may exist only in this connection.
+                    observed = client.thread_start({'cwd':str(cwd), 'ephemeral':False,
+                        'sandbox':'workspace-write', 'approvalPolicy':'never',
+                        'serviceName':'async_workflow', 'projectId':cfg.command_project_id}
+                        ).model_dump(mode='json',by_alias=True)['thread']
+                thread = Thread(client, observed['id'])
+                state.update(session_id=thread.id, thread_id=thread.id, phase="thread_created")
+                manifest.save_effect(key, state)  # Exact ID saved BEFORE submission.
+                if session_id and not following and observed.get('projectId') != cfg.command_project_id:
+                    # An old resumable empty thread already has stored history.
+                    client.request('thread/metadata/update',
+                        {'threadId':thread.id,'projectId':cfg.command_project_id},response_model=ProtocolObject)
+                    observed = client.thread_read(thread.id).model_dump(mode='json',by_alias=True)['thread']
+                state['project_assignment'] = project_assignment(cfg, observed, cwd)
+                manifest.save_effect(key, state)
+                if session_id and not following and observed.get('turns'):
+                    # The desktop may have continued an earlier empty thread.
+                    # Its persisted conversation wins over our pre-turn receipt.
+                    result = {**state, 'status':'needs_input', 'reason':'thread_continued_elsewhere'}
+                    manifest.save_effect(key, result)
+                    return result
                 state.update(phase="turn_start_pending")
                 manifest.save_effect(key, state)
                 handle = thread.turn(prompt_for(item))
                 state.update(status="submitted", phase="turn_started", turn_id=handle.id, started_at=now())
                 manifest.save_effect(key, state)
                 completed = handle.run()
+                if not following:
+                    # turn/start acknowledges acceptance before the rollout has
+                    # necessarily been flushed. Name it after turn completion.
+                    name_thread(thread, item, folder)
                 result = _complete(state, completed.final_response, completed.status.value)
                 # Independent completion receipt permits manifest-crash recovery.
                 atomic(folder / "completion.json", result)
                 manifest.save_effect(key, result)
                 return result
         except Exception as exc:
+            if not action_started:
+                raise
             # Preserve native IDs even on transport/schema/turn failure. Never
             # start a second repair Thread for a task that already owns one.
             atomic(folder / "failure.json", {"at": now(), "error_type": type(exc).__name__,

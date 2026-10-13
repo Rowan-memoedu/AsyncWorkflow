@@ -8,6 +8,8 @@ $principal=New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -
 $trigger=New-ScheduledTaskTrigger -AtLogOn -User $identity
 $settings=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -Hidden
 foreach($role in $Roles) {
+  # Prefect services need normal CPU, I/O and memory priority under desktop load.
+  $settings.Priority=if($role -in @('server','runner','watcher')){4}else{7}
   $arguments='-NoLogo -NoProfile -WindowStyle Hidden -File "'+$projectRoot+'\scripts\run-service.ps1" -Role '+$role
   $action=New-ScheduledTaskAction -Execute $pwsh -Argument $arguments -WorkingDirectory $projectRoot
   Register-ScheduledTask -TaskName "AsyncWorkflow-$role" -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'Personal asynchronous recording workflow; current-user local services.' -Force | Out-Null

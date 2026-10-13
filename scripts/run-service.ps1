@@ -24,9 +24,10 @@ if($Role -in @('runner','watcher')) {
 }
 Start-Transcript -Path "$runtimeRoot\logs\$Role.task.log" -Append | Out-Null
 switch($Role) {
-  server { & "$projectRoot\.venv\Scripts\prefect.exe" server start --host 127.0.0.1 --port 4200 }
-  runner { & $python -m async_workflow.cli serve }
-  watcher { & $python -m async_workflow.cli watch }
+  # Capture native output that Start-Transcript alone does not retain reliably.
+  server { & "$projectRoot\.venv\Scripts\prefect.exe" server start --host 127.0.0.1 --port 4200 2>&1 | Out-File -FilePath "$runtimeRoot\logs\server.output.log" -Append -Encoding utf8 }
+  runner { & $python -m async_workflow.cli serve 2>&1 | Out-File -FilePath "$runtimeRoot\logs\runner.output.log" -Append -Encoding utf8 }
+  watcher { & $python -m async_workflow.cli watch 2>&1 | Out-File -FilePath "$runtimeRoot\logs\watcher.output.log" -Append -Encoding utf8 }
   remnote { & $python -m async_workflow.remnote_bridge }
   xiaomi {
     $env:SERVER_PORT='43140'
