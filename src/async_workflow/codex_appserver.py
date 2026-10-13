@@ -6,9 +6,10 @@ It is not a second Thread store, scheduler, or transport fallback.
 from __future__ import annotations
 
 from pathlib import Path
+from time import sleep
 
 from filelock import FileLock
-from openai_codex import CodexConfig, InvalidRequestError, Thread
+from openai_codex import CodexConfig, InvalidRequestError, JsonRpcError, Thread
 from openai_codex.client import CodexClient
 from pydantic import BaseModel, ConfigDict
 
@@ -54,11 +55,22 @@ def prompt_for(item: dict) -> str:
 
 def name_thread(thread, item, folder):
     title = item.get('title') or item['markdown'].splitlines()[0].lstrip('# ').strip()[:60]
-    try:
-        thread.set_name(title)
-        atomic(folder/'title.json', {'at':now(), 'thread_id':thread.id, 'title':title})
-    except Exception as exc:
-        atomic(folder/'title-failure.json', {'at':now(), 'message':str(exc)})
+    for delay in (0, .5, 1, 2, 4):
+        if delay:
+            sleep(delay)
+        try:
+            thread.set_name(title)
+            atomic(folder/'title.json', {'at':now(), 'thread_id':thread.id, 'title':title})
+            return True
+        except Exception as exc:
+            atomic(folder/'title-failure.json', {'at':now(), 'message':str(exc)})
+            # The first turn is accepted before its rollout is necessarily
+            # flushed. Retrying this identical metadata write is idempotent.
+            if not (isinstance(exc, JsonRpcError) and exc.code == -32603
+                    and thread.id in exc.message
+                    and ('no rollout found' in exc.message or 'is empty' in exc.message)):
+                break
+    return False
 
 
 def prepare_input(cfg, item, folder):
@@ -201,10 +213,9 @@ def execute(cfg, manifest, key: str, item: dict, cwd: Path):
                 handle = thread.turn(prompt_for(item))
                 state.update(status="submitted", phase="turn_started", turn_id=handle.id, started_at=now())
                 manifest.save_effect(key, state)
+                named = following or name_thread(thread, item, folder)
                 completed = handle.run()
-                if not following:
-                    # turn/start acknowledges acceptance before the rollout has
-                    # necessarily been flushed. Name it after turn completion.
+                if not named:
                     name_thread(thread, item, folder)
                 result = _complete(state, completed.final_response, completed.status.value)
                 # Independent completion receipt permits manifest-crash recovery.

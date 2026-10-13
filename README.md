@@ -1,5 +1,9 @@
 # AsyncWorkflow
 
+2026-10-13 Codex 修复：新 Thread 改为创建时绑定官方 Project，避免尚无 rollout 就跨连接修改元数据；仅对明确未提交的失效空 Thread 安全恢复，命名对刷盘延迟有限重试。两条失败命令复用既有 ASR/正文并完成，200 项 Python 测试通过。修订承载指令识别后，原失败样例、独立命令与反例通过隔离模型验证。Prefect 的 SQLAlchemy 兼容性和后台任务优先级已修正。
+
+当前桌面版本仍有独立边界：App Server 的 Project 和 cwd 回读正确，不能证明 ChatGPT 桌面端中的 Codex 已将外部 Thread 加入侧边栏项目。两条现有任务通过桌面原生 `set_thread_title` 原值刷新后才验证出正确项目；独立 SDK 命名和元数据更新不会触发相同刷新，后续自动显示尚未验收。未增加应用数据库写入、私有 IPC 或模拟 UI 的兜底。证据：`D:/Artifacts/AsyncWorkflow/2026-10-13/thread-repair/结果.md`。
+
 2026-10-13 增量：交流录音支持按对象配置独立声道或现场说话人分离，同一对象同一天先合并、统一整理，再写入对象 document 的日期/会议记录。同步后的云端改名按录音 ID 关联，成功转写和同日已处理片段复用；新增同日片段替换日会议结果，旧整体在新结果回读成功后移入 Trash。独立插件 0.1.7 使用真实 document ID，支持用户改名。现有 6 段录音已合为 2 份日会议并回读，重复提交全部跳过、未新增模型调用；189 项 Python 测试、40 项插件测试和独立公开样例通过。证据：`D:/Artifacts/AsyncWorkflow/2026-10-13/交流录音扩展验收.md`。
 
 2026-10-07 增量：交流录音已接入独立声道 FUN-ASR、昵称与词级时间戳，整理为共识、继续讨论、无用的闲聊；沿用冻结整理提示词和独立 RemNote 插件 0.1.6。182 项 Python 测试及独立公开样例通过；插件未改动，此前 39 项插件测试结果继续保留。用户已确认当前成果可行，后续保持必要的格式校验、去重和写入回读，不增加额外模型审核或为细微表达反复重跑。本轮记录位于 `D:/Artifacts/AsyncWorkflow/2026-10-07/meeting-stereo/结果.md`。
@@ -20,7 +24,7 @@ Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → 阿里�
 - Thread 消息只有整理后的正文；续接只有用户补充原话，不加提示前后缀。Codex 正常输出自然语言与 Markdown，不设置输出 schema；本机通过官方 Turn 状态记录运行完成、失败或中断，不能把回合完成当成业务目标已经通过验收。
 - 录音中针对工作流本身的反馈先单独提取，普通正文继续整理归档。反馈正文发送到配置绑定的同一个维护 Thread，明确要求在那里处理，真实歧义在那里讨论；引用、假设、已撤回要求不触发修改。
 - 固定维护 Thread 的投递使用 App Server 原生 `thread/queue/add`，按原生消息 ID 从队列和回合回读去重；不抢占桌面写入者。入队、收到消息和落实修改分别核验，不把投递成功当作规则已生效。
-- 新 Thread 的 `command_workspace` 固定为用户指定工作区；`command_project_id` 必须是官方 `project/list` 返回的项目 ID。用 `project/read` 核对路径，在 `thread/start` 直接传 `projectId`，核对返回的项目和路径后提交正文；首轮完成后再命名。`turn/start` 返回时文件仍可能尚未刷盘，不能先从另一连接修改空 Thread 元数据。宿主工具中的 `local-...` ID 与 App Server 项目 ID 不可混用。
+- 新 Thread 的 `command_workspace` 固定为用户指定工作区；`command_project_id` 必须是官方 `project/list` 返回的项目 ID。用 `project/read` 核对路径，在 `thread/start` 直接传 `projectId`，核对返回的项目和路径后提交正文，再命名。`turn/start` 返回时文件仍可能尚未刷盘，命名仅对该 ID 的空 rollout 错误作有限重试，仍失败则在首轮完成后补试，不重发正文。宿主工具中的 `local-...` ID 与 App Server 项目 ID 不可混用。
 - 如果旧收据停在 `thread_created` 且没有 Turn ID，先尝试恢复原 Thread；只有官方明确返回该 ID 的 `no rollout found` 才新建，并在 `pre-turn-recoveries.json` 保留旧收据和错误。网络异常、`thread not loaded`、提交结果不明或已有 Turn ID 均不触发重建。
 - FUN-ASR 复用现有 global-transcription CLI 的 `--provider funasr` 文件入口，不改其他应用的全局默认。成功的旧 ASR 仍复用；遗留 OSS 任务只做核对及清理，不静默重转。
 - FUN-ASR HTTP 累积快照按时间范围和严格文本前缀归并，只保留同一起点的完整后续版本；不同时间的真实重复讲话保留，重叠但不兼容的版本进入待核对。原始服务回执保持原样，修复归并时复用回执，不重新识别音频。

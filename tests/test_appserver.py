@@ -15,6 +15,7 @@ def setup(tmp_path,monkeypatch):
                    command_project_id='project-fixture')
     monkeypatch.setattr(app,'check_project',lambda *a:None)
     monkeypatch.setattr(app,'Thread',lambda c,t:SimpleNamespace(id=t,turn=c.turn,set_name=c.set_name))
+    monkeypatch.setattr(app,'sleep',lambda *_:None)
     cfg.prepare()
     return cfg, Manifest(cfg, '1'*64), {'route':'codex', 'destination':'', 'raw_text':'calculate',
                                       'content_text':'calculate','markdown':'# Calculate','title':'Canary'}
@@ -55,7 +56,7 @@ class FakeClient:
         return self.response()
 
     def set_name(self, name):
-        assert self.finished, 'turn/start may return before the rollout is flushed'
+        assert self.submitted > 0, 'empty threads have no persisted metadata'
         self.names.append(name)
 
     def turn(self, *args, **kwargs):
@@ -301,3 +302,32 @@ def test_desktop_continuation_prevents_replaying_original_body(setup,monkeypatch
     assert result['reason']=='thread_continued_elsewhere'
     assert result['session_id']==saved['session_id']
     assert sdk.created==sdk.submitted==0
+
+
+def test_name_retries_only_unflushed_rollout_without_replaying_turn(setup,monkeypatch):
+    cfg,store,item=setup
+    sdk=FakeClient(store)
+    attempts=[]
+    def eventual_name(name):
+        assert not sdk.finished  # Visible title need not wait for a long task.
+        attempts.append(name)
+        if len(attempts)==1:
+            raise app.JsonRpcError(-32603,'failed to set thread name: rollout for native-thread is empty')
+        sdk.names.append(name)
+    sdk.set_name=eventual_name
+    monkeypatch.setattr(app,'CodexClient',sdk)
+    result=executor.execute(cfg,store,'key',item)
+    assert result['status']=='completed_unverified'
+    assert attempts==[item['title'],item['title']]
+    assert sdk.created==sdk.submitted==1
+
+
+def test_name_retry_is_bounded(tmp_path,monkeypatch):
+    calls=[]
+    monkeypatch.setattr(app,'sleep',lambda *_:None)
+    def failure(name):
+        calls.append(name)
+        raise app.JsonRpcError(-32603,'rollout for slow-thread is empty')
+    thread=SimpleNamespace(id='slow-thread',set_name=failure)
+    assert app.name_thread(thread,{'title':'Task'},tmp_path) is False
+    assert len(calls)==5
