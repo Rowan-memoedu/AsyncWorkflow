@@ -51,7 +51,7 @@ def run(cfg, paths, *, manual=False):
         for path in paths:
             print(json.dumps({'processing':path.name},ensure_ascii=False),flush=True)
             result=submit_file(cfg,path,canary=manual)
-            store=Manifest(cfg,file_hash(path))
+            store=Manifest(cfg,result.get('group_id') or file_hash(path))
             states={} if result.get('skipped') else wait_recording(client,store)
             current=store.read()
             row={'name':path.name,**result,'states':states,'eligibility':current.get('eligibility'),

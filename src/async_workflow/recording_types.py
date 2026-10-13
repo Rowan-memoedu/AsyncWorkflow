@@ -15,7 +15,20 @@ class SelfRecording(BaseModel):
     reason: str
 
 
+def meeting_contact(cfg, name, provenance):
+    names = [name, provenance.get('cloud_file_name', '')]
+    matches = [contact for contact in cfg.conversation_profiles
+               if contact and any(contact.casefold() in value.casefold() for value in names)]
+    if len(matches) > 1:
+        raise Attention('conversation_contact_ambiguous')
+    return matches[0] if matches else None
+
+
 def kind(cfg, name, duration, provenance):
+    if meeting_contact(cfg, name, provenance):
+        if not 0 < duration < float('inf'):
+            raise Attention('duration_unknown')
+        return 'conversation', 'eligible'
     # Ordinary names never become meeting recordings, regardless of their text.
     if recorded_time(name):
         reason = eligibility(name, duration)

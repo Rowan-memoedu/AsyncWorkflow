@@ -61,6 +61,10 @@ def main():
     batch.add_argument('--latest', type=int, required=True)
     batch.add_argument('--cutoff')
     batch.add_argument('--manual', action='store_true')
+    meetings_command = commands.add_parser('meetings')
+    meetings_command.add_argument('--run', action='store_true')
+    meetings_command.add_argument('--contact')
+    meetings_command.add_argument('--day')
     resume = commands.add_parser("resume")
     resume.add_argument("run_id")
     resume.add_argument("--answer", required=True)
@@ -129,6 +133,14 @@ def main():
         if cutoff and cutoff.tzinfo is None:
             raise Attention('batch_cutoff_timezone_required')
         print(json.dumps({'receipt':str(run(cfg,recent(cfg,args.latest,cutoff),manual=args.manual))}))
+    elif args.command == 'meetings':
+        from . import meetings
+        groups = [g for g in meetings.discover(cfg) if (not args.contact or g['contact'] == args.contact)
+                  and (not args.day or g['day'] == args.day)]
+        result = [meetings.submit(cfg, g, manual=True) if args.run else
+                  {'id':g['id'], 'contact':g['contact'], 'day':g['day'], 'files':len(g['members']),
+                   'duration':sum(m['duration'] for m in g['members'])} for g in groups]
+        print(json.dumps(result, ensure_ascii=False))
     elif args.command == "submit":
         from .ingest import submit_file
         print(json.dumps(submit_file(cfg, Path(args.path), canary=args.canary), default=str))

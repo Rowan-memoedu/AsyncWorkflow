@@ -7,7 +7,7 @@ from .core import Attention, PROMPT_HASH, atomic, digest, read_json
 from .markdown import parse_outline
 
 SECTIONS = ['共识','继续讨论','无用的闲聊']
-POLICY = '''这是双声道交流录音，speaker 是已核实声道对应的昵称，禁止根据语义交换身份。
+POLICY = '''这是交流录音，speaker 是上游按该来源实际方式识别的姓名或昵称：独立通话声道使用已核实映射；现场录音使用实际声音分离和对话语境确定的姓名。禁止根据本次整理的观点内容交换 speaker 身份，也不能把现场说话人编号当左右声道。
 继承原整理规范的忠实、完整、结构化方式，但交流专用要求优先：不要保持不明确的第一人称叙述。
 正常双方对话中，“我”指当前 speaker，“你”指另一位；把动作、状态归给其真实主体，不能因为一句话由某人说出，就把话中描述的另一人的状态也归给说话者。背景话语的指代按下面的背景规则处理。
 正文固定依次分为三个大块：
@@ -63,7 +63,7 @@ def outline(cfg, store, transcript):
     prompt = cfg.prompt.read_bytes()
     if digest(prompt)!=PROMPT_HASH:
         raise Attention('frozen_prompt_hash_mismatch')
-    reference = read_json(store.folder/'asr.json',{}).get('text','')
+    reference = transcript.get('accepted_text_reference', read_json(store.folder/'asr.json',{}).get('text',''))
     signature = digest(transcript['text']+reference+prompt.decode('utf-8-sig')+POLICY+cfg.deepseek_model)
     path = store.folder/'conversation'/('outline-'+signature+'.json')
     saved = read_json(path)

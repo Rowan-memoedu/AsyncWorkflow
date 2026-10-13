@@ -37,6 +37,16 @@ function fixture() {
 const outline={text:'Title :: literal → $x^2$',children:[{text:'Reason',children:[{text:'Example',children:[]}]}]};
 
 describe('meeting date path',()=>{
+  it('uses the exact per-contact document ID after the user renames it',async()=>{
+    const f=fixture();f.parent.text=['Lee & Kim'];f.parent.isDoc=true;
+    f.node('date',['10.7'],'parent').isDoc=true;f.node('meeting',['会议记录'],'date');
+    expect(await f.api.meeting('parent','2026-10-07')).toEqual({date_id:'date',parent_id:'meeting'});
+    f.parent.text=['Renamed meeting folder'];
+    expect(await f.api.meeting('parent','2026-10-07')).toEqual({date_id:'date',parent_id:'meeting'});
+    expect(f.counts().creates).toBe(0);
+    f.parent.isDoc=false;
+    await expect(f.api.meeting('parent','2026-10-07')).rejects.toThrow('meeting_document_changed');
+  });
   it('reuses the existing date and meeting branch without creating anything',async()=>{
     const f=fixture();f.parent.text=['内部会议预案'];f.parent.isDoc=true;
     f.node('date',['10.7'],'parent').isDoc=true;f.node('meeting',['会议记录'],'date');

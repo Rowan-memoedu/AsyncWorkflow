@@ -42,7 +42,8 @@ def normalize(value: dict) -> tuple[str, list[dict]]:
     for transcript in value.get("transcripts", []):
         for sentence in transcript.get("sentences", []):
             if text := sentence.get("text", "").strip():
-                sentences.append({"text": text, "start_ms": sentence.get("begin_time"), "end_ms": sentence.get("end_time")})
+                sentences.append({"text": text, "start_ms": sentence.get("begin_time"), "end_ms": sentence.get("end_time"),
+                                  **({'speaker_id': sentence['speaker_id']} if 'speaker_id' in sentence else {})})
     if not sentences:
         raise Attention("asr_empty_or_missing_sentences")
     return "\n".join(s["text"] for s in sentences), sentences
@@ -144,7 +145,7 @@ def recognize(cfg: Settings, manifest: Manifest, source: Path) -> str:
     return result['text']
 
 
-def recognize_filetrans(cfg: Settings, manifest: Manifest, source: Path) -> str:
+def recognize_filetrans(cfg: Settings, manifest: Manifest, source: Path, *, model=None, parameters=None) -> str:
     result_path = manifest.folder / "asr.json"
     if result_path.exists():
         # A previous successful result still requires staged-object cleanup.
@@ -158,7 +159,7 @@ def recognize_filetrans(cfg: Settings, manifest: Manifest, source: Path) -> str:
     settings.credentials_provider = oss.credentials.StaticCredentialsProvider(require(credentials, "ALIBABA_CLOUD_ACCESS_KEY_ID"), require(credentials, "ALIBABA_CLOUD_ACCESS_KEY_SECRET"), credentials.get("ALIBABA_CLOUD_SECURITY_TOKEN"))
     bucket = oss.Client(settings)
     stage = manifest.read().get("asr", {})
-    model = stage.get('model') or (cfg.asr_model if cfg.asr_provider == 'bailian' else 'qwen-audio-3.1-asr-flash-filetrans')
+    model = stage.get('model') or model or (cfg.asr_model if cfg.asr_provider == 'bailian' else 'qwen-audio-3.1-asr-flash-filetrans')
     if saved and stage.get("cleaned"):
         return saved["text"]
     if stage.get("submission") == "unknown" and not stage.get("task_id"):
@@ -182,7 +183,7 @@ def recognize_filetrans(cfg: Settings, manifest: Manifest, source: Path) -> str:
             signed = bucket.presign(oss.GetObjectRequest(bucket=cfg.oss_bucket, key=key), expires=timedelta(hours=3))
             headers = {"Authorization": "Bearer " + require(credentials, "DASHSCOPE_API_KEY"), "X-DashScope-Async": "enable"}
             try:
-                reply = http.post(BASE + "/services/audio/asr/transcription", headers=headers, json={"model": model, "input": {"file_urls": [signed.url]}, "parameters": {}})
+                reply = http.post(BASE + "/services/audio/asr/transcription", headers=headers, json={"model": model, "input": {"file_urls": [signed.url]}, "parameters": parameters or {}})
             except httpx.HTTPError:
                 raise UnknownOutcome("asr_submission_unknown") from None
             if reply.status_code >= 400:

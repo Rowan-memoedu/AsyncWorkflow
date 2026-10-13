@@ -58,6 +58,15 @@ def baseline(cfg: Settings):
 
 def submit_file(cfg: Settings, path: Path, *, canary=False):
     source = safe_source(path, cfg.inbox)
+    if cfg.conversation_profiles:
+        from . import meetings, xiaomi
+        from .recording_types import meeting_contact
+        xiaomi.refresh_recording_names(cfg)
+        if meeting_contact(cfg, source.name, source_metadata(source, cfg)):
+            identity = file_hash(source)
+            group = next(g for g in meetings.discover(cfg, refresh=False)
+                         if any(m['id'] == identity for m in g['members']))
+            return meetings.submit(cfg, group, manual=canary)
     first = source.stat()
     time.sleep(cfg.stability_seconds)
     second = source.stat()
@@ -116,7 +125,18 @@ def watch(cfg: Settings):
         historical_hashes = set(read_json(current.root / "baseline.json", {}).get("hashes", []))
         attempted = 0
         submitted = 0
+        meeting_paths = set()
+        if current.conversation_profiles:
+            from . import meetings
+            for group in meetings.discover(current):
+                meeting_paths.update(m['path'] for m in group['members'])
+                if not meetings.automatic_allowed(current, group):
+                    continue
+                result = meetings.submit(current, group)
+                submitted += bool(result.get('run_id') and not result.get('reused'))
         for path in audio_files(current.inbox):
+            if str(path) in meeting_paths:
+                continue
             if attempted >= current.max_batch:
                 break
             provenance = source_metadata(path, current)

@@ -40,6 +40,12 @@ def analyze_recording(path: str, canary: bool = False):
     source = safe_source(Path(path), cfg.inbox)
     recording_id = file_hash(source)
     manifest = Manifest(cfg, recording_id)
+    if cfg.conversation_profiles:
+        from . import meetings
+        if recording_types.meeting_contact(cfg, source.name, source_metadata(source, cfg)):
+            group = next(g for g in meetings.discover(cfg, refresh=False)
+                         if any(m['id'] == recording_id for m in g['members']))
+            return meetings.submit(cfg, group, manual=canary)
     with manifest.lock:
         data = manifest.read()
         paths = data["sources"]
@@ -198,8 +204,10 @@ def perform(cfg, manifest, key, item):
 def serve_local():
     from .command_inbox import deployments
     from .repairs import repair_recording
+    from .meetings import process_meeting_day
     serve(analyze_recording.to_deployment(name="local", concurrency_limit=2),
           process_segment.to_deployment(name="local", concurrency_limit=2),
           process_workflow_feedback.to_deployment(name='local',concurrency_limit=1),
           repair_recording.to_deployment(name="local", concurrency_limit=1),
+          process_meeting_day.to_deployment(name='local', concurrency_limit=1),
           *deployments(), pause_on_shutdown=False, limit=9)

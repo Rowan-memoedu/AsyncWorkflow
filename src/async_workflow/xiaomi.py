@@ -40,6 +40,23 @@ def status(cfg):
         return {"account_count":len(accounts), "job_count":len(jobs), "version":request(client, "GET", "/api/system-config/info")["appVersion"]}
 
 
+def refresh_recording_names(cfg):
+    """Cloud renames do not rename already downloaded files; join by stable asset ID."""
+    binding = read_json(cfg.root / 'xiaomi-binding.json', {})
+    if not binding:
+        return {}
+    with connection(cfg) as client:
+        albums = request(client, 'GET', f"/api/album/latest/{binding['account_id']}")
+        names = {}
+        for album in albums:
+            if str(album.get('remoteId')) == '-1' and not album.get('shadow'):
+                for asset in request(client, 'GET', f"/api/asset/{album['id']}/latest"):
+                    if asset.get('type') == 'AUDIO':
+                        names[str(asset['id'])] = asset['fileName']
+    atomic(cfg.root / 'xiaomi-recording-names.json', {'at': now(), 'names': names})
+    return names
+
+
 def configure(cfg, account_id=None):
     """Baseline metadata before any download; never enable production consumption here."""
     with connection(cfg) as client:

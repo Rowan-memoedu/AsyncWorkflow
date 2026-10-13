@@ -106,7 +106,9 @@ export class WorkflowAPI {
     const check=new Date(year,month-1,day,12);
     if(check.getFullYear()!==year||check.getMonth()!==month-1||check.getDate()!==day)throw new Error('date_invalid');
     const root=await this.rem(documentId);
-    if(!await root.isDocument() || await this.title(root)!=='内部会议预案')throw new Error('meeting_document_changed');
+    // The caller binds an exact document ID. It may be a per-contact document
+    // and can be renamed by the user without changing its identity.
+    if(!await root.isDocument())throw new Error('meeting_document_changed');
     const dates=[];
     for(const child of await root.getChildrenRem()) {
       const title=await this.title(child);
@@ -328,7 +330,7 @@ export class WorkflowAPI {
   }
   async dispatch(method:string,args:any) {
     switch(method) {
-      case 'status': return {connected:true,protocol:1,plugin_version:'0.1.6',kb_id:(await this.plugin.kb.getCurrentKnowledgeBaseData())._id};
+      case 'status': return {connected:true,protocol:1,plugin_version:'0.1.7',kb_id:(await this.plugin.kb.getCurrentKnowledgeBaseData())._id};
       case 'template_snapshot': return this.snapshot(args.rem_id);
       case 'targets_snapshot': return this.snapshot(args.rem_id,'targets');
       case 'search_documents': return this.search(args.queries);

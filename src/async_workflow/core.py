@@ -101,6 +101,7 @@ class Settings(BaseModel):
     meeting_document_id: str = ''
     conversation_contacts: list[str] = Field(default_factory=list)
     conversation_channel_profiles: dict[str, dict[str, str]] = Field(default_factory=dict)
+    conversation_profiles: dict[str, dict[str, str]] = Field(default_factory=dict)
     recording_types: Path = Path('D:/Projects/AsyncWorkflow/docs/recording-types.md')
     script_actions: dict[str, dict] = Field(default_factory=dict)
     enabled: bool = False
@@ -171,7 +172,9 @@ def source_metadata(path: Path, cfg: Settings) -> dict:
     taken = datetime.fromtimestamp(int(parts[3]) / 1000, timezone.utc)
     if int(parts[3]) <= 0 or taken > datetime.now(timezone.utc):
         raise Attention("xiaomi_source_time_invalid")
-    return {"source":"xiaomi", "source_type":kind, "asset_id":parts[2], "recorded_at":taken.isoformat()}
+    names = read_json(cfg.root / 'xiaomi-recording-names.json', {}).get('names', {})
+    return {"source":"xiaomi", "source_type":kind, "asset_id":parts[2], "recorded_at":taken.isoformat(),
+            "cloud_file_name": names.get(parts[2], path.name)}
 
 
 def probe(path: Path, executable: Path) -> float:
