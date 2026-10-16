@@ -2,6 +2,8 @@ from __future__ import annotations
 import time
 import uuid
 import os
+import json
+import re
 import subprocess
 import sys
 from datetime import timedelta
@@ -15,6 +17,35 @@ from .auth import access, require
 from .core import Attention, UnknownOutcome, Manifest, Settings, atomic, read_json, file_hash, now
 
 BASE = "https://dashscope.aliyuncs.com/api/v1"
+
+
+def retryable_cli_failure(manifest: Manifest) -> str | None:
+    """Recognize a finished CLI's explicit failure, never a lost/active request."""
+    stage = manifest.read().get('asr', {})
+    if stage.get('exit_code') != 2 or not stage.get('finished_at'):
+        return None
+    if (manifest.folder/'asr.json').exists() or (manifest.folder/'funasr/raw.json').exists():
+        return None
+    path = Path(stage.get('stdout_log') or manifest.folder/'asr-cli.out.log')
+    if not path.is_file():
+        return None
+    with path.open('rb') as stream:
+        stream.seek(max(stage.get('stdout_offset', 0), max(0, path.stat().st_size-65536)))
+        lines = stream.read().decode('utf-8', errors='replace').splitlines()
+    try:
+        receipt = json.loads(next(line for line in reversed(lines) if line.strip()))
+    except (ValueError, StopIteration):
+        return None
+    if not isinstance(receipt, dict):
+        return None
+    error = receipt.get('error', '') if receipt.get('ok') is False else ''
+    transient = (
+        r'Fun-ASR service error: (CLIENT_ERROR|SERVER_ERROR|InternalError|Throttling)',
+        r'Fun-ASR HTTP (429|500|502|503|504)',
+        r'Fun-ASR HTTP stream failure: (URLError|TimeoutError|RemoteDisconnected|IncompleteRead|SSLError)',
+        r'Fun-ASR (final sentence has invalid timestamps|stream ended with unfinished sentences|returned an empty transcript)',
+    )
+    return error if isinstance(error, str) and any(re.fullmatch(p, error) for p in transient) else None
 
 
 def cleanup(bucket, cfg, manifest, stage):
@@ -87,6 +118,66 @@ def normalize_funasr(value: dict, recording_id: str) -> dict:
             'source_sha256':recording_id, 'provider_status':value['status']}
 
 
+def restore_funasr_chunks(manifest: Manifest) -> bool:
+    """Rebuild a missing final receipt from complete, source-bound HTTP chunks."""
+    duration = manifest.read().get('duration')
+    if not duration:
+        return False
+    folder = manifest.folder/'funasr-chunks'
+    if not folder.exists():
+        folder = manifest.folder/'funasr/chunks'
+    files = sorted(p for p in folder.glob('*.json')
+                   if re.fullmatch(r'\d{4}\.json',p.name))
+    utterances, empty, offset = [], [], 0
+    for index,path in enumerate(files):
+        d = read_json(path)
+        if (path.stem != f'{index:04d}' or d.get('source_sha256') != manifest.folder.name
+                or d.get('offset_ms') != offset or not isinstance(d.get('length_ms'),int)
+                or d['length_ms'] <= 0):
+            return False
+        events = d.get('events', [])
+        no_words = bool(events and events[-1].get('code') == 'CLIENT_ERROR'
+            and events[-1].get('message') == 'ASR_RESPONSE_HAVE_NO_WORDS'
+            and not any(e.get('output', {}).get('sentence', {}).get('text', '').strip() for e in events))
+        if no_words:
+            empty.append(offset)
+        elif d.get('complete'):
+            finals, pending = {}, set()
+            for event in events:
+                if event.get('code'):
+                    return False
+                sentence = event.get('output', {}).get('sentence', {})
+                if not sentence or sentence.get('heartbeat'):
+                    continue
+                identity=(sentence.get('channel_id',0),sentence.get('sentence_id'))
+                if identity[1] is None:
+                    return False
+                if sentence.get('sentence_end') is True:
+                    pending.discard(identity)
+                    if sentence.get('text','').strip():
+                        start,end=sentence.get('begin_time'),sentence.get('end_time')
+                        if type(start) is not int or type(end) is not int or not 0 <= start < end:
+                            return False
+                        finals[identity]={'text':sentence['text'].strip(),'start_ms':start+offset,'end_ms':end+offset}
+                elif sentence.get('text','').strip() and identity not in finals:
+                    pending.add(identity)
+            if pending or not finals:
+                return False
+            utterances.extend(sorted(finals.values(),key=lambda s:(s['start_ms'],s['end_ms'])))
+        else:
+            return False
+        offset += d['length_ms']
+    if not utterances or offset != round(duration*1000):
+        return False
+    raw={'route':'funasr','source_sha256':manifest.folder.name,
+         'text':'\n'.join(s['text'] for s in utterances),'utterances':utterances,
+         'status':{'model':'fun-asr-realtime','transport':'http-sse','chunks':len(files),
+                   'restored_from_chunks':True,'no_words_chunk_offsets_ms':empty}}
+    normalize_funasr(raw,manifest.folder.name)
+    atomic(manifest.folder/'funasr/raw.json',raw)
+    return True
+
+
 def recognize(cfg: Settings, manifest: Manifest, source: Path) -> str:
     saved = read_json(manifest.folder / 'asr.json')
     stage = manifest.read().get('asr', {})
@@ -102,18 +193,31 @@ def recognize(cfg: Settings, manifest: Manifest, source: Path) -> str:
     output = manifest.folder / 'funasr'
     raw_path = output / 'raw.json'
     if not raw_path.exists():
-        if stage.get('submission') == 'unknown':
+        restore_funasr_chunks(manifest)
+    if not raw_path.exists():
+        failure = retryable_cli_failure(manifest)
+        if stage.get('submission') == 'unknown' and not failure:
             raise UnknownOutcome('funasr_submission_unknown_no_replay')
+        previous_attempt = stage.get('attempt', 1 if stage.get('started_at') else 0)
+        if previous_attempt >= 3:
+            raise Attention('funasr_retry_limit_exceeded')
         if not cfg.transcription_cli.is_file():
             raise Attention('global_transcription_cli_missing')
+        history = stage.get('attempts', [])
+        if stage.get('started_at'):
+            history = [*history, {k:v for k,v in stage.items() if k != 'attempts'}]
         stage={'provider':'funasr','model':'fun-asr-realtime',
                'submission':'unknown','output_dir':str(output),'cleaned':True,
+               'attempt':previous_attempt+1, 'attempts':history,
                'started_at':now(), 'stdout_log':str(manifest.folder/'asr-cli.out.log'),
                'stderr_log':str(manifest.folder/'asr-cli.err.log')}
+        stdout_path = Path(stage['stdout_log'])
+        stage['stdout_offset'] = stdout_path.stat().st_size if stdout_path.exists() else 0
         manifest.update(asr=stage)
         temp = cfg.root / 'temp'
         temp.mkdir(parents=True, exist_ok=True)
-        env = {**os.environ, 'TEMP':str(temp), 'TMP':str(temp), 'PYTHONIOENCODING':'utf-8'}
+        env = {**os.environ, 'TEMP':str(temp), 'TMP':str(temp), 'PYTHONIOENCODING':'utf-8',
+               'FUNASR_RECEIPT_DIR':str(manifest.folder/'funasr-chunks')}
         with open(stage['stdout_log'],'ab') as stdout, open(stage['stderr_log'],'ab') as stderr:
             try:
                 process = subprocess.Popen([sys.executable, str(cfg.transcription_cli), 'transcribe', str(source),
@@ -133,6 +237,10 @@ def recognize(cfg: Settings, manifest: Manifest, source: Path) -> str:
                 raise UnknownOutcome('funasr_submission_unknown_no_replay') from None
             stage.update(exit_code=code,finished_at=now())
             manifest.update(asr=stage)
+            failure = retryable_cli_failure(manifest)
+            if failure:
+                stage.update(submission='failed', failure_code=failure)
+                manifest.update(asr=stage)
         if code and not raw_path.exists():
             raise Attention('funasr_cli_failed_receipt_retained')
     result = normalize_funasr(read_json(raw_path), manifest.folder.name)

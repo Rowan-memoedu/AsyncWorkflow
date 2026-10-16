@@ -1,5 +1,9 @@
 # AsyncWorkflow
 
+2026-10-17 运转检查与修复：后台五项服务健康；启用后的 43 份本地录音均有处理记录。发现并恢复 7 条积压业务任务，相关 19 个 Prefect 运行均完成；补齐 9 个 RemNote 正文块并独立回读位置，另有 1 条反馈已进入原生队列，1 条录音复用已有日会议结果。修复范围包括：同一 flow 的有限暂时错误重试、ASR 明确失败与未知提交的区分、FUN-ASR 分片缓存及无文字尾片处理、复用已确认子分支的准确祖先，以及后台重载时清理残留进程树。已接受的 ASR 和效果回执哈希保持一致。218 项 Python 测试、43 项插件测试、10 项 HTTP 适配测试及公开音频验证通过；最终缓存目录调整另有 37 项针对性回归通过。完整证据：`D:/Artifacts/AsyncWorkflow/2026-10-17/health-repair/结果.md`。
+
+插件功能修复已加载并通过真实回读；构建版本为 0.1.8，当前已加载脚本的版本字段仍报告 0.1.7。仅用于同步该版本标识的追加 RemNote 重启被自动审批拦截，标识留待正常重启更新；这不影响已回读验证的分支解析修复。
+
 2026-10-13 Codex 修复：新 Thread 改为创建时绑定官方 Project，避免尚无 rollout 就跨连接修改元数据；仅对明确未提交的失效空 Thread 安全恢复，命名对刷盘延迟有限重试。两条失败命令复用既有 ASR/正文并完成，200 项 Python 测试通过。修订承载指令识别后，原失败样例、独立命令与反例通过隔离模型验证。Prefect 的 SQLAlchemy 兼容性和后台任务优先级已修正。
 
 工作流由现有后台服务独立驱动；ChatGPT 桌面端中的 Codex 用于查看和接管真实 Thread。2026-10-13 曾把用户提出的后台定期刷新误实现为唤醒当前对话的 heartbeat，现已通过原生调度接口暂停，并撤回“用户已选择 heartbeat”的说法。
@@ -65,6 +69,10 @@ Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → 阿里�
 启动项由 `scripts/install-startup.ps1` 管理，角色为 server、runner、watcher、xiaomi、remnote。服务只监听本机。`disable` 只停止新增录音进入处理链，不中断已有任务。
 
 Prefect 的 server、runner、watcher 使用计划任务优先级 4（普通 CPU、I/O 和内存优先级）；默认 7 在桌面负载下曾导致导入依赖和 API 响应明显停滞。三项服务的原生输出保存在 `logs/<role>.output.log`，不能只凭进程存活判断健康。Prefect 3.8.7 固定配合 SQLAlchemy 2.0.54；2.1.2 已实测触发调度批量写入的 `bulk_dml` 错误。
+
+后台代码重载使用 `pwsh -NoProfile -File scripts/restart-services.ps1 -Roles runner,watcher`。它先确认无正在执行的 flow，再对准确服务进程树停止和重启，并核对 PID 创建时间；直接停止 headless conhost 的计划任务可能留下占锁的旧 Python 进程，后续子进程会因控制台失效而崩溃。该脚本只管理本流程后台服务。
+
+恢复扫描对已知模型网络故障及有明确 CLI 失败回执的暂时 ASR 故障，最多恢复到同一 flow 的第 3 次执行；未知提交、鉴权错误、人工待答和未确认结构冲突保持可见。FUN-ASR CLI 的成功分片存于录音目录的 `funasr-chunks`（与最终 `funasr` 输出目录同级），后续失败不丢弃已完成分片。仅服务明确返回 `ASR_RESPONSE_HAVE_NO_WORDS` 且该分片没有任何文字事件时将其记为空片；整段无文字仍报错。完整回执可以离线恢复最终转写，成功结果不再向服务重复请求。
 
 ## 下一步验收
 

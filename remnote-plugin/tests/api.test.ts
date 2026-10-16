@@ -205,6 +205,31 @@ describe('blank siblings around whole blocks',()=>{
   });
 });
 describe('template and recording day',()=>{
+  it('reuses the verified ancestor of a cached descendant with duplicate headings',async()=>{
+    const f=fixture();f.node('template',['Template']);f.node('t-a',['Journal'],'template');f.node('t-b',['Data'],'t-a');
+    await f.api.snapshot('template');
+    f.node('daily',['Day']);f.node('a',['Journal'],'daily');f.node('b',['Journal'],'daily');
+    f.node('data',['Data'],'a');f.node('other-data',['Data'],'b');
+    f.values.set('async-workflow-v1:daily:2026-10-01:["Journal","Data"]',{daily_id:'daily',parent_id:'data'});
+    expect(await f.api.daily('2026-10-01',['Journal'])).toEqual({daily_id:'daily',parent_id:'a'});
+    expect(f.counts().creates).toBe(0);
+  });
+  it('does not select an arbitrary duplicate without an existing verified identity',async()=>{
+    const f=fixture();f.node('template',['Template']);f.node('t-a',['Journal'],'template');
+    await f.api.snapshot('template');f.node('daily',['Day']);
+    f.node('a',['Journal'],'daily');f.node('b',['Journal'],'daily');
+    await expect(f.api.daily('2026-10-01',['Journal'])).rejects.toThrow('daily_duplicate_branch');
+    expect(f.counts().creates).toBe(0);
+  });
+  it('rejects descendant caches that disagree about the ancestor',async()=>{
+    const f=fixture();f.node('template',['Template']);f.node('t-a',['Journal'],'template');
+    f.node('t-b',['Data'],'t-a');f.node('t-c',['Notes'],'t-a');await f.api.snapshot('template');
+    f.node('daily',['Day']);f.node('a',['Journal'],'daily');f.node('b',['Journal'],'daily');
+    f.node('data',['Data'],'a');f.node('notes',['Notes'],'b');
+    f.values.set('async-workflow-v1:daily:2026-10-01:["Journal","Data"]',{daily_id:'daily',parent_id:'data'});
+    f.values.set('async-workflow-v1:daily:2026-10-01:["Journal","Notes"]',{daily_id:'daily',parent_id:'notes'});
+    await expect(f.api.daily('2026-10-01',['Journal'])).rejects.toThrow('daily_duplicate_branch');
+  });
   it('uses the requested calendar day and caches branch IDs',async()=>{
     const f=fixture();f.node('template',['日记模板']);f.node('other',['其他碎片'],'template');
     await f.api.snapshot('template');

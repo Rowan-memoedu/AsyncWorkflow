@@ -70,21 +70,48 @@ export class WorkflowAPI {
     if(!path.length) throw new Error('branch_required');
     const cacheKey=key(`daily:${date}:${JSON.stringify(path)}`);
     const cached=await this.plugin.storage.getLocal<{daily_id:string;parent_id:string}>(cacheKey);
-    if(cached) {
-      let current=await this.rem(cached.parent_id);
-      for(const label of [...path].reverse()) {
+    const validated=async(value:{daily_id:string;parent_id:string},labels:string[])=>{
+      let current=await this.rem(value.parent_id);
+      for(const label of [...labels].reverse()) {
         if((await this.title(current))!==label) throw new Error('daily_branch_changed');
         const parent=await current.getParentRem();
         if(!parent) throw new Error('daily_branch_changed');
         current=parent;
       }
-      if(current._id!==cached.daily_id) throw new Error('daily_branch_changed');
+      if(current._id!==value.daily_id) throw new Error('daily_branch_changed');
+    };
+    if(cached) {
+      await validated(cached,path);
       return cached;
+    }
+    // A previously resolved descendant already proves its exact ancestor.
+    // Reuse that identity when a daily template contains duplicate headings;
+    // never select an arbitrary duplicate or modify either existing subtree.
+    const ancestors=new Map<string,{daily_id:string;parent_id:string}>();
+    const fromDescendants=async(node:SnapshotNode,labels:string[])=>{
+      for(const child of node.children) {
+        const full=[...labels,child.title];
+        const value=await this.plugin.storage.getLocal<{daily_id:string;parent_id:string}>(key(`daily:${date}:${JSON.stringify(full)}`));
+        if(value) {
+          await validated(value,full);
+          let current=await this.rem(value.parent_id);
+          for(let n=full.length;n>path.length;n--) current=(await current.getParentRem())!;
+          ancestors.set(current._id,{daily_id:value.daily_id,parent_id:current._id});
+        }
+        await fromDescendants(child,full);
+      }
+    };
+    await fromDescendants(branch,path);
+    if(ancestors.size>1) throw new Error('daily_duplicate_branch');
+    if(ancestors.size===1) {
+      const result=[...ancestors.values()][0];
+      await this.plugin.storage.setLocal(cacheKey,result);
+      return result;
     }
     const daily=await this.plugin.date.getDailyDoc(calendarDate);
     if(!daily) throw new Error('daily_unavailable');
     let parent=daily;
-    for(const label of path) {
+    for(const [index,label] of path.entries()) {
       const found=[];
       for(const child of await parent.getChildrenRem()) if((await this.title(child))===label) found.push(child);
       if(found.length>1) throw new Error('daily_duplicate_branch');
@@ -95,6 +122,8 @@ export class WorkflowAPI {
         state=await this.ensureNode(recordKey,state,parent._id,[label]);
         parent=await this.rem(state.id!);
       }
+      await this.plugin.storage.setLocal(key(`daily:${date}:${JSON.stringify(path.slice(0,index+1))}`),
+        {daily_id:daily._id,parent_id:parent._id});
     }
     const result={daily_id:daily._id,parent_id:parent._id};
     await this.plugin.storage.setLocal(cacheKey,result);
@@ -330,7 +359,7 @@ export class WorkflowAPI {
   }
   async dispatch(method:string,args:any) {
     switch(method) {
-      case 'status': return {connected:true,protocol:1,plugin_version:'0.1.7',kb_id:(await this.plugin.kb.getCurrentKnowledgeBaseData())._id};
+      case 'status': return {connected:true,protocol:1,plugin_version:'0.1.8',kb_id:(await this.plugin.kb.getCurrentKnowledgeBaseData())._id};
       case 'template_snapshot': return this.snapshot(args.rem_id);
       case 'targets_snapshot': return this.snapshot(args.rem_id,'targets');
       case 'search_documents': return this.search(args.queries);

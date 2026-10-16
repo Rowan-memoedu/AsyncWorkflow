@@ -182,6 +182,7 @@ def recover(cfg):
     from prefect.flow_runs import resume_flow_run
     import asyncio
     from . import remnote
+    from . import asr
     remnote_ready = None
     with get_client(sync_client=True) as client:
         for file in cfg.artifacts.glob("*/manifest.json"):
@@ -191,7 +192,18 @@ def recover(cfg):
                 ids.append(data['workflow_feedback_run'])
             for run_id in ids:
                 run = client.read_flow_run(UUID(run_id))
-                if run.state.is_crashed() and run.run_count < 3:
+                if run.state is None:
+                    continue
+                message = run.state.message or ''
+                # Retry known transient failures in the SAME flow. Actions still
+                # reconcile their existing receipts; unknown submissions wait.
+                model_connection_failure = any(name+':' in message for name in
+                    ('APIConnectionError', 'APITimeoutError', 'InternalServerError', 'RateLimitError'))
+                asr_failure = ('funasr_cli_failed_receipt_retained' in message
+                    and asr.retryable_cli_failure(Manifest(cfg, file.parent.name)) is not None
+                    and data.get('asr', {}).get('attempt', 1) < 3)
+                if run.run_count < 3 and (run.state.is_crashed() or
+                        (run.state.is_failed() and (model_connection_failure or asr_failure))):
                     # Every external action reconciles its manifest before doing any work.
                     client.set_flow_run_state(run.id, Scheduled(name="AwaitingRetry"), force=True)
                 if run.state.is_paused() and run.state.state_details.pause_key == "dependency":

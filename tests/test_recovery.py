@@ -77,3 +77,30 @@ def test_only_machine_connection_waits_resume_when_plugin_returns(cfg,monkeypatc
     ingest.recover(cfg)
     assert resumed == (ids[:2] if connected else [])
     assert len(checks)==1
+
+
+@pytest.mark.parametrize('message,count,retry',[
+    ('Flow run encountered an exception: APIConnectionError: Connection error.',1,True),
+    ('Flow run encountered an exception: APIConnectionError: Connection error.',3,False),
+    ('Flow run encountered an exception: AuthenticationError: denied',1,False),
+    ('Flow run encountered an exception: UnknownOutcome: appserver_outcome_unknown',1,False),
+    ('Flow run encountered an exception: Attention: daily_duplicate_branch',1,False),
+])
+def test_transient_failure_recovery_preserves_run_identity_and_limits(cfg,monkeypatch,message,count,retry):
+    from uuid import UUID
+    from prefect.states import Failed
+    from prefect.client import orchestration
+    from async_workflow import ingest
+    run_id=UUID(int=99)
+    Manifest(cfg,'d'*64).update(analysis_run=str(run_id))
+    scheduled=[]
+    class Client:
+        def __enter__(self): return self
+        def __exit__(self,*args): pass
+        def read_flow_run(self,value):
+            assert value==run_id
+            return SimpleNamespace(id=run_id,state=Failed(message=message),run_count=count)
+        def set_flow_run_state(self,value,state,force): scheduled.append(value)
+    monkeypatch.setattr(orchestration,'get_client',lambda **kwargs:Client())
+    ingest.recover(cfg)
+    assert scheduled==([run_id] if retry else [])

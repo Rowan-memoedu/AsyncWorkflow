@@ -37,6 +37,99 @@ def test_unknown_submission_is_not_blindly_repeated(setup):
     with pytest.raises(UnknownOutcome): asr.recognize(cfg,store,source)
 
 
+@pytest.mark.parametrize('error', [
+    'Fun-ASR service error: CLIENT_ERROR',
+    'Fun-ASR HTTP stream failure: URLError',
+    'Fun-ASR final sentence has invalid timestamps',
+])
+def test_finished_explicit_cli_failure_can_resume_same_recording(setup,monkeypatch,error):
+    import json
+    cfg,store,source,raw=setup
+    cfg.transcription_cli=store.folder/'cli.py';cfg.transcription_cli.write_text('fixture')
+    output=store.folder/'asr-cli.out.log'
+    output.write_text(json.dumps({'ok':False,'error':error})+'\n')
+    store.update(asr={'submission':'unknown','exit_code':2,'finished_at':'earlier',
+                      'started_at':'earlier','stdout_log':str(output),'pid':123})
+    class Process:
+        pid=456
+        def wait(self,timeout):
+            atomic(store.folder/'funasr/raw.json',raw)
+            return 0
+    def launch(*a,**kw):
+        # The global CLI creates its result directory with exist_ok=False.
+        # Its durable request cache must therefore live outside that directory.
+        assert not Path(kw['env']['FUNASR_RECEIPT_DIR']).is_relative_to(store.folder/'funasr')
+        return Process()
+    monkeypatch.setattr(asr.subprocess,'Popen',launch)
+    assert asr.recognize(cfg,store,source)=='Accepted words.'
+    stage=store.read()['asr']
+    assert stage['attempt']==2 and stage['attempts'][0]['pid']==123
+
+
+@pytest.mark.parametrize('error,code',[
+    ('Fun-ASR HTTP 401',2),('Fun-ASR HTTP stream failure: URLError',1),
+    ('local runtime failure: FileNotFoundError',2),
+])
+def test_other_cli_errors_do_not_authorize_provider_replay(setup,error,code):
+    import json
+    _,store,_,_=setup
+    output=store.folder/'asr-cli.out.log';output.write_text(json.dumps({'ok':False,'error':error}))
+    store.update(asr={'submission':'unknown','exit_code':code,'finished_at':'earlier','stdout_log':str(output)})
+    assert asr.retryable_cli_failure(store) is None
+
+
+def test_cli_recovery_does_not_use_a_previous_attempt_error(setup):
+    _,store,_,_=setup
+    output=store.folder/'asr-cli.out.log';output.write_text('{"ok":false,"error":"Fun-ASR HTTP 503"}\n')
+    store.update(asr={'submission':'unknown','exit_code':2,'finished_at':'now',
+                      'stdout_log':str(output),'stdout_offset':output.stat().st_size})
+    assert asr.retryable_cli_failure(store) is None
+
+
+def test_explicit_cli_retry_limit_is_bounded(setup):
+    _,store,source,_=setup
+    output=store.folder/'asr-cli.out.log';output.write_text('{"ok":false,"error":"Fun-ASR HTTP 503"}\n')
+    store.update(asr={'submission':'unknown','attempt':3,'exit_code':2,'finished_at':'earlier','stdout_log':str(output)})
+    with pytest.raises(Attention,match='retry_limit_exceeded'):
+        asr.recognize(setup[0],store,source)
+
+
+def chunk_fixture(store):
+    store.update(duration=2.5,asr={'submission':'unknown','attempt':3})
+    folder=store.folder/'funasr/chunks'
+    atomic(folder/'0000.json',{'source_sha256':store.folder.name,'offset_ms':0,'length_ms':2000,'complete':True,
+        'events':[{'output':{'sentence':{'sentence_id':1,'sentence_end':True,'begin_time':100,'end_time':1900,'text':'Cached words.'}}}]})
+    atomic(folder/'0001.json',{'source_sha256':store.folder.name,'offset_ms':2000,'length_ms':500,'complete':False,
+        'events':[{'code':'CLIENT_ERROR','message':'ASR_RESPONSE_HAVE_NO_WORDS'}]})
+    return folder
+
+
+def test_complete_chunk_receipts_restore_failed_asr_without_any_process_or_request(setup,monkeypatch):
+    cfg,store,source,_=setup
+    chunk_fixture(store)
+    monkeypatch.setattr(asr.subprocess,'Popen',lambda *a,**k:pytest.fail('No provider replay needed'))
+    assert asr.recognize(cfg,store,source)=='Cached words.'
+    from async_workflow.core import read_json
+    result=read_json(store.folder/'asr.json')
+    assert result['provider_status']['no_words_chunk_offsets_ms']==[2000]
+    assert store.read()['asr']['attempt']==3
+
+
+@pytest.mark.parametrize('corruption',['wrong_source','missing_chunk','other_error','partial_text'])
+def test_chunk_recovery_requires_complete_source_bound_evidence(setup,corruption):
+    from async_workflow.core import read_json
+    _,store,_,_=setup
+    folder=chunk_fixture(store)
+    d=read_json(folder/'0001.json')
+    if corruption=='wrong_source':d['source_sha256']='f'*64
+    if corruption=='missing_chunk':d['offset_ms']=3000
+    if corruption=='other_error':d['events']=[{'code':'CLIENT_ERROR','message':'Other failure'}]
+    if corruption=='partial_text':d['events'].insert(0,{'output':{'sentence':{'text':'Unfinished words'}}})
+    atomic(folder/'0001.json',d)
+    assert asr.restore_funasr_chunks(store) is False
+    assert not (store.folder/'asr.json').exists()
+
+
 def test_local_launch_failure_is_logged_as_not_submitted(setup,monkeypatch):
     cfg,store,source,_=setup
     cfg.transcription_cli=store.folder/'public-cli.py';cfg.transcription_cli.write_text('print(1)')
