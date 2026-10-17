@@ -1,4 +1,4 @@
-import {describe,it,expect} from 'vitest';
+import {describe,it,expect,vi} from 'vitest';
 import {WorkflowAPI} from '../src/api';
 
 function fixture() {
@@ -12,7 +12,7 @@ function fixture() {
     if(loseMove){loseMove=false;throw new Error('lost_move_reply');}
   }
   function node(id:string,text:any[]=[],parent?:string) {
-    const value={_id:id,text,parent,isDoc:false,order:[...nodes.values()].filter(n=>n.parent===parent).length,
+    const value={_id:id,text,parent,createdAt:0,isDoc:false,order:[...nodes.values()].filter(n=>n.parent===parent).length,
       getParentRem:async()=>nodes.get(value.parent),
       getChildrenRem:async()=>[...nodes.values()].filter(n=>n.parent===id).sort((a,b)=>a.order-b.order),
       setParent:async(p:string,position=0)=>reorder([id],p,position),
@@ -205,6 +205,61 @@ describe('blank siblings around whole blocks',()=>{
   });
 });
 describe('template and recording day',()=>{
+  it('waits for asynchronous native template insertion instead of creating a duplicate',async()=>{
+    vi.useFakeTimers();
+    try {
+      const f=fixture();f.node('template',['Template']);f.node('t-notes',['Notes'],'template');
+      await f.api.snapshot('template');f.node('daily',['Day']).createdAt=Date.now();
+      setTimeout(()=>f.node('native-notes',['Notes'],'daily'),64);
+      const result=f.api.daily('2026-10-01',['Notes']);
+      await vi.advanceTimersByTimeAsync(500);
+      expect((await result).parent_id).toBe('native-notes');expect(f.counts().creates).toBe(0);
+    } finally {vi.useRealTimers();}
+  });
+  it('rebinds an old plugin-created heading cache to the unique non-owned sibling',async()=>{
+    const f=fixture();f.node('template',['Template']);f.node('t-other',['Fragments'],'template');
+    await f.api.snapshot('template');f.node('daily',['Day']);
+    f.node('old',['Fragments'],'daily');f.node('original',['Fragments'],'daily');
+    f.node('old-content',['Keep original content and ID'],'old');
+    f.values.set('async-workflow-v1:daily:2026-10-01:["Fragments"]',{daily_id:'daily',parent_id:'old'});
+    f.values.set('async-workflow-v1:daily-create:2026-10-01:daily:Fragments',
+      {phase:'ready',id:'old',parent:'daily',text:['Fragments']});
+    expect((await f.api.daily('2026-10-01',['Fragments'])).parent_id).toBe('original');
+    expect(f.nodes.get('old-content').parent).toBe('old');
+    expect(f.values.get('async-workflow-v1:daily:2026-10-01:["Fragments"]').parent_id).toBe('original');
+    expect(f.counts()).toEqual({creates:0,dailyCalls:0});
+  });
+  it('also waits for a delayed nested branch in an independent template',async()=>{
+    vi.useFakeTimers();
+    try {
+      const f=fixture();f.node('template',['Template']);f.node('t-work',['Work'],'template');
+      f.node('t-review',['Review'],'t-work');await f.api.snapshot('template');
+      f.node('daily',['Day']).createdAt=Date.now();f.node('work',['Work'],'daily');
+      setTimeout(()=>f.node('review',['Review'],'work'),1400);
+      const result=f.api.daily('2026-10-02',['Work','Review']);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect((await result).parent_id).toBe('review');expect(f.counts().creates).toBe(0);
+    } finally {vi.useRealTimers();}
+  });
+  it('does not use an owned receipt to choose between two non-owned branches',async()=>{
+    const f=fixture();f.node('template',['Template']);f.node('t-notes',['Notes'],'template');
+    await f.api.snapshot('template');f.node('daily',['Day']);
+    for(const id of ['owned','native-a','native-b']) f.node(id,['Notes'],'daily');
+    f.values.set('async-workflow-v1:daily:2026-10-01:["Notes"]',{daily_id:'daily',parent_id:'owned'});
+    f.values.set('async-workflow-v1:daily-create:2026-10-01:daily:Notes',
+      {phase:'ready',id:'owned',parent:'daily',text:['Notes']});
+    await expect(f.api.daily('2026-10-01',['Notes'])).rejects.toThrow('daily_duplicate_branch');
+    expect(f.counts().creates).toBe(0);
+  });
+  it('defers a new daily document whose template never becomes available',async()=>{
+    vi.useFakeTimers();
+    try {
+      const f=fixture();f.node('template',['Template']);f.node('t-notes',['Notes'],'template');
+      await f.api.snapshot('template');f.node('daily',['Day']).createdAt=Date.now();
+      const result=expect(f.api.daily('2026-10-03',['Notes'])).rejects.toThrow('daily_template_pending');
+      await vi.advanceTimersByTimeAsync(3100);await result;expect(f.counts().creates).toBe(0);
+    } finally {vi.useRealTimers();}
+  });
   it('reuses the verified ancestor of a cached descendant with duplicate headings',async()=>{
     const f=fixture();f.node('template',['Template']);f.node('t-a',['Journal'],'template');f.node('t-b',['Data'],'t-a');
     await f.api.snapshot('template');

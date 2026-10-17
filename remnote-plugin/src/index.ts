@@ -24,7 +24,7 @@ async function activate(plugin:ReactRNPlugin) {
       current.onmessage=(event)=>{
         const request=JSON.parse(event.data);
         if(!request.id || !request.method) return;
-        chain=chain.then(async()=>{
+        const run=async()=>{
           try {
             const handler=request.method.startsWith('command_inbox_')?commands:api;
             const result=await handler.dispatch(request.method,request.args || {});
@@ -32,7 +32,10 @@ async function activate(plugin:ReactRNPlugin) {
           } catch(error) {
             if(current.readyState===WebSocket.OPEN) current.send(JSON.stringify({id:request.id,error:error instanceof Error?error.message:'plugin_error'}));
           }
-        });
+        };
+        // A slow write or diagnostic must not block the read-only health probe.
+        if(request.method==='status') void run();
+        else chain=chain.then(run);
       };
       current.onclose=()=>{if(!stopped)timer=setTimeout(connect,5000);};
       current.onerror=()=>current.close();

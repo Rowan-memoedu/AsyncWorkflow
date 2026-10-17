@@ -18,6 +18,15 @@ export class WorkflowAPI {
     return rem;
   }
   async title(rem:PluginRem) { return this.plugin.richText.toString(rem.text || []); }
+  async inspectDaily(dailyId:string,date:string,path:string[]) {
+    const daily=await this.rem(dailyId);
+    const children=[];
+    for(const child of await daily.getChildrenRem()) children.push({id:child._id,
+      raw_text:child.text,resolved_title:await this.title(child),created_at:child.createdAt});
+    return {daily_id:dailyId,children,
+      cached:await this.plugin.storage.getLocal(key(`daily:${date}:${JSON.stringify(path)}`)),
+      created:await this.plugin.storage.getLocal(key(`daily-create:${date}:${dailyId}:${path[0]}`))};
+  }
   async snapshot(id:string,slot='template') {
     let count=0;
     const visit=async(rem:PluginRem,depth:number):Promise<SnapshotNode>=>{
@@ -80,10 +89,7 @@ export class WorkflowAPI {
       }
       if(current._id!==value.daily_id) throw new Error('daily_branch_changed');
     };
-    if(cached) {
-      await validated(cached,path);
-      return cached;
-    }
+    if(cached) await validated(cached,path);
     // A previously resolved descendant already proves its exact ancestor.
     // Reuse that identity when a daily template contains duplicate headings;
     // never select an arbitrary duplicate or modify either existing subtree.
@@ -101,24 +107,49 @@ export class WorkflowAPI {
         await fromDescendants(child,full);
       }
     };
-    await fromDescendants(branch,path);
+    if(!cached) await fromDescendants(branch,path);
     if(ancestors.size>1) throw new Error('daily_duplicate_branch');
-    if(ancestors.size===1) {
-      const result=[...ancestors.values()][0];
-      await this.plugin.storage.setLocal(cacheKey,result);
-      return result;
-    }
-    const daily=await this.plugin.date.getDailyDoc(calendarDate);
+    const known=cached??[...ancestors.values()][0];
+    const daily=known?await this.rem(known.daily_id):await this.plugin.date.getDailyDoc(calendarDate);
     if(!daily) throw new Error('daily_unavailable');
     let parent=daily;
     for(const [index,label] of path.entries()) {
-      const found=[];
-      for(const child of await parent.getChildrenRem()) if((await this.title(child))===label) found.push(child);
+      const matches=async()=>{
+        const found:PluginRem[]=[];
+        for(const child of await (await this.rem(parent._id)).getChildrenRem())
+          if((await this.title(child))===label) found.push(child);
+        return found;
+      };
+      let found=await matches();
+      if(!found.length) {
+        // getDailyDoc resolves before RemNote's automatic template insertion.
+        // Re-read live children, never create from that first empty snapshot.
+        for(let attempt=0;attempt<30 && !found.length;attempt++) {
+          await new Promise(resolve=>setTimeout(resolve,100));
+          found=await matches();
+        }
+        // A new Daily still missing its native template is not safe to extend.
+        // Older documents can legitimately lack a newly added template branch.
+        if(!found.length && Date.now()-daily.createdAt<60000) throw new Error('daily_template_pending');
+      }
+      const recordKey=key(`daily-create:${date}:${parent._id}:${label}`);
+      const owned=await this.plugin.storage.getLocal<NodeState>(recordKey);
+      if(found.length>1 && owned?.phase==='ready' && owned.id &&
+         owned.parent===parent._id && found.some(child=>child._id===owned.id)) {
+        // Identify the old resolver's extra heading by its creation receipt.
+        // A single non-owned sibling is the native branch; never pick by order.
+        const original=found.filter(child=>child._id!==owned.id);
+        if(original.length===1) found=original;
+      }
+      if(found.length>1 && known && !owned?.id) {
+        let expected=await this.rem(known.parent_id);
+        for(let n=path.length-1;n>index;n--) expected=(await expected.getParentRem())!;
+        if(found.some(child=>child._id===expected._id)) found=[expected];
+      }
       if(found.length>1) throw new Error('daily_duplicate_branch');
       if(found.length===1) parent=found[0];
       else {
-        const recordKey=key(`daily-create:${date}:${parent._id}:${label}`);
-        let state=await this.plugin.storage.getLocal<NodeState>(recordKey);
+        let state=owned;
         state=await this.ensureNode(recordKey,state,parent._id,[label]);
         parent=await this.rem(state.id!);
       }
@@ -359,13 +390,14 @@ export class WorkflowAPI {
   }
   async dispatch(method:string,args:any) {
     switch(method) {
-      case 'status': return {connected:true,protocol:1,plugin_version:'0.1.8',kb_id:(await this.plugin.kb.getCurrentKnowledgeBaseData())._id};
+      case 'status': return {connected:true,protocol:1,plugin_version:'0.1.9',kb_id:(await this.plugin.kb.getCurrentKnowledgeBaseData())._id};
       case 'template_snapshot': return this.snapshot(args.rem_id);
       case 'targets_snapshot': return this.snapshot(args.rem_id,'targets');
       case 'search_documents': return this.search(args.queries);
       case 'create_document': return this.createDocument(args.effect_key,args.title,args.parent_id??null);
       case 'resolve_todo': return this.todo(args.category,args.software);
       case 'resolve_daily': return this.daily(args.date,args.branch_path);
+      case 'inspect_daily': return this.inspectDaily(args.daily_id,args.date,args.branch_path);
       case 'resolve_meeting': return this.meeting(args.document_id,args.date);
       case 'relocate_outline': return this.relocate(args.effect_key,args.operation_id,args.parent_id,args.trash_id,args.strip_metadata??true);
       case 'publish_outline': return this.publish(args.effect_key,args.parent_id,args.tree,args.metadata);

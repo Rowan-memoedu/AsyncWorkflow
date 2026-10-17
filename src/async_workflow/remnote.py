@@ -1,5 +1,6 @@
 """Independent RemNote plugin client. No MCP server or MCP client dependency."""
 from __future__ import annotations
+import asyncio
 from contextlib import asynccontextmanager
 import httpx
 from .core import Attention, UnknownOutcome, atomic, digest, now
@@ -70,7 +71,15 @@ async def resolve_target(cfg,session,route,recording_id):
         target=await call(session,'resolve_meeting',document_id=route['document_id'],date=route['recorded_day'])
         return {'parent':target['parent_id'],'meeting_date_id':target['date_id']}
     if route['type']=='daily':
-        target=await call(session,'resolve_daily',date=route['recorded_day'],branch_path=route['branch_path'])
+        for attempt in range(3):
+            try:
+                target=await call(session,'resolve_daily',date=route['recorded_day'],branch_path=route['branch_path'])
+                break
+            except Attention as exc:
+                if str(exc)!='independent_remnote_plugin:daily_template_pending' or attempt==2:
+                    raise
+                # The plugin has not created or published any content yet.
+                await asyncio.sleep(1)
         return {'parent':target['parent_id'],'daily_id':target['daily_id']}
     if route['type']=='create_document':
         import json
