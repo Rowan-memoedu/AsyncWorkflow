@@ -28,8 +28,8 @@ Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → 阿里�
 - 新命令通过官方 `openai-codex` SDK 创建持久 Thread，先保存 Thread ID，再提交并保存 Turn ID。用户直接在该 Thread 继续；桌面持有写入权时不创建替代 Thread。
 - 所有输出先区分承载操作和正文：新建/命名/定位 document 或 Thread 的说明留作操作元数据，实际正文沿用冻结提示词整理。Codex 收到整理后的任务正文，查询、执行要求及限制不会被当成容器指令移除。
 - Thread 消息只有整理后的正文；续接只有用户补充原话，不加提示前后缀。Codex 正常输出自然语言与 Markdown，不设置输出 schema；本机通过官方 Turn 状态记录运行完成、失败或中断，不能把回合完成当成业务目标已经通过验收。
-- 录音中针对工作流本身的反馈先单独提取，普通正文继续整理归档。反馈正文发送到配置绑定的同一个维护 Thread，明确要求在那里处理，真实歧义在那里讨论；引用、假设、已撤回要求不触发修改。
-- 固定维护 Thread 的投递使用 App Server 原生 `thread/queue/add`，按原生消息 ID 从队列和回合回读去重；不抢占桌面写入者。入队、收到消息和落实修改分别核验，不把投递成功当作规则已生效。
+- 录音中针对工作流本身的反馈先单独提取，普通正文继续整理归档。路由规则、分类要求和其他工作流反馈统一进入当前“异步工作流维护 (2)”Thread，绑定以本机 `feedback_thread_id` 为准；原“异步工作流维护”已存档。真实歧义在现役 Thread 讨论；引用、假设、已撤回要求不触发修改。
+- 固定维护 Thread 的投递使用 App Server 原生 `thread/queue/add`，按原生消息 ID 从队列和回合回读去重；不抢占桌面写入者。更换绑定仅影响未投递的新反馈，已提交或结果未知的旧消息继续保留原 Thread 与投递收据，核对后处理，不自动重发到新目标或回退到已存档目标。入队、收到消息和落实修改分别核验，不把投递成功当作规则已生效。
 - 新 Thread 的 `command_workspace` 固定为用户指定工作区；`command_project_id` 必须是官方 `project/list` 返回的项目 ID。用 `project/read` 核对路径，在 `thread/start` 直接传 `projectId`，核对返回的项目和路径后提交正文，再命名。`turn/start` 返回时文件仍可能尚未刷盘，命名仅对该 ID 的空 rollout 错误作有限重试，仍失败则在首轮完成后补试，不重发正文。宿主工具中的 `local-...` ID 与 App Server 项目 ID 不可混用。
 - 如果旧收据停在 `thread_created` 且没有 Turn ID，先尝试恢复原 Thread；只有官方明确返回该 ID 的 `no rollout found` 才新建，并在 `pre-turn-recoveries.json` 保留旧收据和错误。网络异常、`thread not loaded`、提交结果不明或已有 Turn ID 均不触发重建。
 - FUN-ASR 复用现有 global-transcription CLI 的 `--provider funasr` 文件入口，不改其他应用的全局默认。成功的旧 ASR 仍复用；遗留 OSS 任务只做核对及清理，不静默重转。

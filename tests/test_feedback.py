@@ -223,3 +223,29 @@ def test_submitted_feedback_body_is_frozen_across_prompt_revisions(setup,monkeyp
     store.save_effect('feedback-one',{'status':'delivered','thread_id':cfg.feedback_thread_id})
     monkeypatch.setattr(routing,'ask',lambda *a,**k:pytest.fail('A sent message must stay unchanged'))
     assert feedback.message(cfg,store,item)=='Delivered request'
+
+
+def test_new_feedback_uses_replacement_binding_and_preserves_previous_receipts(setup):
+    cfg,store,client=setup
+    previous={'status':'delivered','thread_id':cfg.feedback_thread_id,'turn_id':'old-turn'}
+    store.save_effect('previous-feedback',previous)
+    previous=store.effect('previous-feedback')
+    cfg.feedback_thread_id='replacement-native-thread'
+    result=delivery.deliver(cfg,store,'new-feedback','A new routing request.')
+    assert result['thread_id']=='replacement-native-thread'
+    sent=[p for method,p in client.calls if method=='thread/queue/add']
+    assert len(sent)==1 and sent[0]['threadId']=='replacement-native-thread'
+    assert store.effect('previous-feedback')==previous
+
+
+@pytest.mark.parametrize('status',['queued','delivered','outcome_unknown'])
+def test_rebinding_does_not_replay_a_previously_submitted_feedback(setup,status):
+    cfg,store,client=setup
+    previous={'status':status,'thread_id':cfg.feedback_thread_id,'client_user_message_id':'old-message'}
+    store.save_effect('feedback-one',previous)
+    previous=store.effect('feedback-one')
+    cfg.feedback_thread_id='replacement-native-thread'
+    with pytest.raises(Attention,match='target_changed_requires_reconciliation'):
+        delivery.deliver(cfg,store,'feedback-one','Previously submitted body.')
+    assert store.effect('feedback-one')==previous
+    assert not client.calls
