@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, ConfigDict, Field
 from .core import Attention, atomic, digest, now, read_json
 from .splitter import client, record_usage
-from . import routing_rules
+from . import routing_rules, focus_routing
 
 class Queries(BaseModel):
     model_config = ConfigDict(extra='forbid')
@@ -179,6 +179,8 @@ async def plan(cfg, session, call, requested, content, provenance, *, item=None)
             if not parent: raise Attention('new_document_parent_unresolved')
             parent_id=parent['parent_id']
         return {**base,'type':'create_document','title':requested.strip(),'parent_id':parent_id,'review_eligible':False}
+    if item.get('focus_kind') and (item['focus_kind']=='habit' or not requested.strip()):
+        return {**base,**focus_routing.plan(cfg,item,date,paths)}
     if item.get('kind') in ('shopping','todo','information'):
         targets=read_json(cfg.root/'todo-targets.json')
         if not targets or targets.get('todo_id')!=cfg.todo_document_id: raise Attention('todo_targets_not_synced')

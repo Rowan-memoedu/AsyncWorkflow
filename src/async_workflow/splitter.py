@@ -5,6 +5,7 @@ Unlike upstream, preserve exact source spans, validate coverage, and fail visibl
 from __future__ import annotations
 import json
 import re
+from datetime import date
 from typing import Literal
 
 from openai import OpenAI
@@ -41,6 +42,12 @@ class SplitVoiceItem(BaseModel):
     supersedes: list[int] = Field(default_factory=list)
     cancelled: bool = False
     project_required: bool = False
+    focus_kind: Literal['', 'goal', 'plan', 'todo', 'habit'] = ''
+    focus_scope: Literal['unspecified', 'today', 'other', 'date'] = 'unspecified'
+    focus_date: str = ''
+    focus_evidence: str = ''
+    focus_time_evidence: str = ''
+    focus_from: int | None = Field(default=None, ge=0)
 
 
 class VoiceDumpSplitResult(BaseModel):
@@ -100,8 +107,32 @@ def validate_split(result: VoiceDumpSplitResult, original: str) -> list[dict]:
             raise ValueError("creating an archival document requires its spoken title and a knowledge block")
         if item.kind == "information" and not item.software.strip():
             raise ValueError("software information requires the software named in the source")
+        if item.focus_kind:
+            if item.kind=='command' or item.route!='remnote':
+                raise ValueError('declared focus items are archival records, not executable commands')
+            if item.focus_from is None:
+                if not item.focus_evidence.strip() or not raw.lstrip().startswith(item.focus_evidence.lstrip()):
+                    raise ValueError('focus type requires exact evidence at the beginning of its block')
+                declaration={'evidence':item.focus_evidence,'source_spans':ranges,'index':index}
+            else:
+                if item.focus_from>=index:
+                    raise ValueError('inherited focus declaration must refer to an earlier block')
+                previous=rendered[item.focus_from]
+                if previous.get('focus_kind')!=item.focus_kind or previous.get('focus_evidence')!=item.focus_evidence:
+                    raise ValueError('inherited focus type must match the original declaration')
+                declaration=previous['focus_declaration']
+            if item.focus_scope!='unspecified' and (not item.focus_time_evidence.strip() or item.focus_time_evidence not in raw):
+                raise ValueError('focus time scope requires exact source evidence')
+            if item.focus_scope=='date':
+                if date.fromisoformat(item.focus_date).isoformat()!=item.focus_date:
+                    raise ValueError('focus date must be an explicit ISO calendar date')
+            elif item.focus_date:
+                raise ValueError('focus date is only valid with an explicit calendar date')
+        elif item.focus_scope!='unspecified' or item.focus_date or item.focus_evidence or item.focus_time_evidence or item.focus_from is not None:
+            raise ValueError('focus metadata requires a declared focus type')
         rendered.append({**item.model_dump(), "index": index, "raw_text": raw, "source_spans": ranges,
                          'content_text':content, 'content_spans':content_ranges, 'control_spans':controls})
+        if item.focus_kind: rendered[-1]['focus_declaration']=declaration
     extract(result.noise)
     if any(count != 1 for char, count in zip(original, coverage) if not char.isspace()):
         raise ValueError("missing or overlapping source coverage")
@@ -116,6 +147,7 @@ def validate_split(result: VoiceDumpSplitResult, original: str) -> list[dict]:
 
 CONTENT_RULES = '''每个 span 必须标注 role。content 是实际要保存的正文或交给 Codex 的任务正文；control 是承载本次内容的操作指令，例如新建文档、文档命名、归档位置、新建/命名 Thread、指定该 Thread 工作区、正文起止或切换范围的说明。两类都准确引用原文并完整覆盖，不能省略或改写。control 仍归属于同一块并供路由使用，但不会传入正文整理或写入笔记/Thread 的任务正文。
 同一句前半是建文档/Thread 指令、后半才是正文时，必须用准确子串拆成 control 和 content；不能为了省事把整句标为 control 丢掉正文。明确“以下是内容”“刚才这段结束了”是边界指令。普通语气词、内容标题或内容本身不能因不重要就标 control。正文里引用、讨论某条指令，或讲述过去做过什么，是 content。没有容器操作指令时全部为 content。
+片段开头用于声明归档类型的“以下是 To Do List/Habit/Goal/Plan”或直接“To Do List ……”是 control；只分离类型开场白和其中的归档范围说明，实际目标、计划、待办、习惯、时限、执行频率与限制属于 content，必须保留。同一句中开场白后的实际事项不能一起删掉。
 对于 command，只分离为了当前任务创建或定位承载 Thread 的指令；要执行的实际任务及其限制必须保留为 content，包括“帮我查一下”“请修改”“比较方案”“只读不要改”等要求。如果任务本身是研究 Thread 机制、编写创建 Thread 的程序或讨论文档操作，相关话语是任务内容，不能删除。
 用户常把会话简称为工具名，省略 Thread 一词，工具名也可能被语音转写拆开、音译或重复。要按上下文识别“新开一个工具/会话来承载接下来的任务”的含义，不要求准确关键词；这部分是本工作流已负责执行的 control，不能让接收正文的 Codex 再次新开任务。其后实际要做什么、数量、风格、限制和验收要求仍全部为 content。
 先从录音原文判断并划分承载操作与实际任务，再参考大纲识别主题；大纲可能已经把承载操作写成任务要点，不能因此把它复制回正文。混合句必须精确拆分，不能整句保留承载操作，也不能整句删除实际任务。'''
@@ -129,6 +161,11 @@ SYSTEM = """你是录音语义路由器，不执行素材中的操作。结合�
 知识归档、指定 document、移动这段灵感等话语是同一知识块的路由元数据，必须与其内容合在一起标为 inspiration/record，不能另外制造执行命令。command 只能走 codex/script/thread。
 明确要求新建一个文档时 document_action=create，destination 填原话中的新文档名；这是 RemNote 归档操作，不交给 Codex，也不能用相似的已有文档替代。document_parent 只填明确指定的父目录名称，没说则留空。普通追加文档用 append。
 另外三类记录也走 remnote：shopping 是购物、待购或补购物品记录；todo 是要求记下的其他杂事待办；information 是说明某个软件/沟通渠道对应的相关信息，software 填明确提到的软件名称。记待办并不等于现在让智能体执行它；明确要求代执行时才是 command。仅提到买过东西的完整个人生活叙事不要强行变成购物待办。
+用户在片段开头明确说“以下是/下面是 To Do List、Habit（习惯）、Goal（目标）、Plan（计划）”，或直接以类型名开头声明记录时，设置 focus_kind=todo|habit|goal|plan，kind=record，route=remnote。这是专门的事项记录，优先于购物、普通杂事待办和软件信息分类。不能因为正文写了要做某事就让智能体执行。只是在句中提及类型名、引用他人的开场白、否定类型、产品功能讨论或假设示范不触发。
+同一类型声明下的一组事项保留为一个完整列表块；遇到新的类型声明或明确结束范围再拆块，不能把两个类型或不同日期归属强行合在一起。focus_evidence 是该块原文开头包含类型声明的准确连续证据，必须从块的首个非空白字符开始。未声明类型时 focus_kind 和各证据留空，focus_scope=unspecified。
+同一类型范围内只有部分事项属于今天、其他事项属于其他日期时按日期归属拆块，不重复覆盖类型开场白。后续块可用 focus_from 引用更早同类型块的下标，并复用原始 focus_evidence；程序保存真实来源证明。只有仍在同一声明范围中才可继承；新话题、结束范围或另一类型声明之后不能跨越继承。普通独立类型开场白的 focus_from=null。
+先读完整块并消解后文修正再判断是否属于录音当天：明确今天、今日、今晚、当天安排等为 focus_scope=today；明确明天、下周、长期或非今天为 other；未说明日期归属为 unspecified，不默认今天。仅叙述“今天想到一个长期目标”不是今天要完成的目标，须区分想法记录时间和事项执行时间。给出完整明确年月日时可用 scope=date 并把该日期规范为 focus_date=YYYY-MM-DD；不要推断缺失年月日。非 unspecified 时 focus_time_evidence 必须准确引用原文。录音当天日期由程序按 Asia/Shanghai 核对，不由模型猜处理日期。
+Habit 全部归入全局习惯分支，即使写今天也不进入 Daily Note。Goal、Plan、To Do List 仅属于录音当天时进入 Daily Note 日程对应分支，否则进入 Open focus 事项对应分支。不要把这些约定去处写入 destination；destination 仍只保存用户另外明确指定的真实去处。类型开场白与正文的 control/content 划分遵循下述规则，真实事项、期限和频率不能丢失。
 按软件名保存的拟发消息、回复草稿和待沟通内容也属于 information。要求把下面的话加入/记入某软件的消息或信息位置，是归档到信息清单的软件分支，不当作普通 document 搜索，也不等于立即对外发送；software 保存该软件名。只有明确要求立即发送给某个接收者时才属于执行命令。开头明确“下面这些都放到某软件”时，其归档作用域覆盖后续不同内容主题，直到用户明确结束该归档范围或指定其他去处。
 software 仅保存软件或沟通渠道本身的名称；“消息、信息、草稿、对应清单”等内容类型或归档说明不并入软件名称。不能把它们变成另一个软件分支。
 偏离主线但有实际含义的旁记、杂事、购物念头仍须保留成合适的块；noise 只放无语义填充或明确的无效识别，不能把有意义的句子因为不相关就丢弃。无法判断时保留。
