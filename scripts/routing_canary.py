@@ -18,7 +18,7 @@ async def check_daily():
         ('personal-exercise','刚刚骑了半小时自行车，腿有点酸，但整个人轻松了。','个人数据'),
         ('personal-state','今天下午比较疲惫，晚上又有精神了。','个人数据'),
         ('concrete-study','今天做微积分换元积分的练习，用了四十分钟，总算学会了这类题。','每日碎碎念'),
-        ('study-cognition','我在做矩阵乘法练习时发现，题目里的颜色提示让我依赖识别而不是主动回忆，这影响了记忆提取。','认知科学相关'),
+        ('study-cognition','我在做矩阵乘法练习时发现，题目里的颜色提示让我依赖识别而不是主动回忆，这影响了记忆提取。','一些注定重复的思考'),
         ('subject-thought','今天学习图论的树时，我又推了一遍：树中顶点数比边数多一，删去叶子可做归纳证明。','一些注定重复的思考'),
     ]
     async def forbidden(*a,**k): raise AssertionError('daily classification must not read or write RemNote')
