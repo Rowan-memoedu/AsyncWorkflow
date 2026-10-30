@@ -1,5 +1,7 @@
 # AsyncWorkflow
 
+- 录音执行 Thread 的 WakeWire 入口与边界见 [docs/wakewire.md](docs/wakewire.md)。只替换原生 SDK 传输，保留正文、收据和其他流程；后续开发先核对该文件及现役源码。
+
 Windows 本地异步录音处理：Prefect 编排，FUN-ASR 转写，冻结 prompt 整理，独立 RemNote 插件和官方 Codex App Server 输出。
 
 - 源码只在此仓库；运行数据 D:/AppData/AsyncWorkflow，产物 D:/Artifacts/AsyncWorkflow，缓存 D:/Caches/AsyncWorkflow。

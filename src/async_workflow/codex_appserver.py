@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from time import sleep
+import os
 
 from filelock import FileLock
 from openai_codex import CodexConfig, InvalidRequestError, JsonRpcError, Thread
@@ -16,11 +17,17 @@ from pydantic import BaseModel, ConfigDict
 from .core import Attention, UnknownOutcome, atomic, digest, now, read_json, resolve_codex_path
 
 
-def sdk_config(cfg, cwd: Path) -> CodexConfig:
+def sdk_config(cfg, cwd: Path, *, via_wakewire: bool = False) -> CodexConfig:
     # Keep the desktop's CODEX_HOME, login and normal user configuration. The
     # Desktop updates replace the managed binary directory. Resolve only an
     # unambiguous replacement; preserve existing/custom runtime configuration.
-    return CodexConfig(codex_bin=str(resolve_codex_path(cfg.codex)), cwd=str(cwd),
+    runtime = str(resolve_codex_path(cfg.codex))
+    launch = ((os.environ.get("WAKEWIRE_NODE", "C:/Program Files/nodejs/node.exe"),
+               os.environ.get("WAKEWIRE_CLI", "D:/Applications/WakeWire/node_modules/wakewire/dist/cli.js"),
+               "codex-session", "--client", "async_workflow", "--codex", runtime, "--cwd", str(cwd))
+              if via_wakewire else None)
+    return CodexConfig(codex_bin=runtime, launch_args_override=launch, cwd=str(cwd),
+                       env={"WAKEWIRE_HOME": os.environ.get("WAKEWIRE_HOME", "D:/AppData/WakeWire")} if via_wakewire else None,
                        client_name="async_workflow", client_title="Async Workflow",
                        experimental_api=True)
 
@@ -104,7 +111,7 @@ def reconcile(cfg, manifest, key, saved):
     """Read a known native turn after a lost response without resuming/replaying it."""
     if not saved.get("turn_id") or not saved.get("session_id"):
         raise UnknownOutcome("appserver_submission_unknown_no_replay")
-    with CodexClient(sdk_config(cfg, Path(saved["cwd"]))) as client:
+    with CodexClient(sdk_config(cfg, Path(saved["cwd"]), via_wakewire=True)) as client:
         client.initialize()
         thread = client.thread_read(saved["session_id"], include_turns=True)
         data = thread.model_dump(mode="json", by_alias=True)["thread"]
@@ -160,7 +167,7 @@ def execute(cfg, manifest, key: str, item: dict, cwd: Path):
             state['is_followup'] = True
         action_started = False
         try:
-            with CodexClient(sdk_config(cfg, cwd)) as client:
+            with CodexClient(sdk_config(cfg, cwd, via_wakewire=True)) as client:
                 client.initialize()
                 check_project(cfg, cwd, client)
                 if session_id:
