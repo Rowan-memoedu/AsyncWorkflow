@@ -37,6 +37,19 @@ def test_unknown_submission_is_not_blindly_repeated(setup):
     with pytest.raises(UnknownOutcome): asr.recognize(cfg,store,source)
 
 
+def test_active_transcriber_is_not_duplicated_or_killed(setup, monkeypatch):
+    import time
+    cfg,store,source,_=setup
+    class Process:
+        def cmdline(self): return [str(cfg.transcription_cli),str(source)]
+        def create_time(self): return time.time()-60
+    store.update(asr={'submission':'unknown','pid':123})
+    monkeypatch.setattr(asr.psutil,'Process',lambda *a:Process())
+    monkeypatch.setattr(asr.subprocess,'Popen',lambda *a,**k:pytest.fail('Duplicate transcription'))
+    with pytest.raises(UnknownOutcome,match='still_running'):
+        asr.recognize(cfg,store,source)
+
+
 @pytest.mark.parametrize('error', [
     'Fun-ASR service error: CLIENT_ERROR',
     'Fun-ASR HTTP stream failure: URLError',
@@ -70,12 +83,12 @@ def test_finished_explicit_cli_failure_can_resume_same_recording(setup,monkeypat
     ('Fun-ASR HTTP 401',2),('Fun-ASR HTTP stream failure: URLError',1),
     ('local runtime failure: FileNotFoundError',2),
 ])
-def test_other_cli_errors_do_not_authorize_provider_replay(setup,error,code):
+def test_all_terminated_read_only_transcription_errors_can_retry(setup,error,code):
     import json
     _,store,_,_=setup
     output=store.folder/'asr-cli.out.log';output.write_text(json.dumps({'ok':False,'error':error}))
     store.update(asr={'submission':'unknown','exit_code':code,'finished_at':'earlier','stdout_log':str(output)})
-    assert asr.retryable_cli_failure(store) is None
+    assert asr.retryable_cli_failure(store) == error
 
 
 def test_cli_recovery_does_not_use_a_previous_attempt_error(setup):
@@ -83,15 +96,22 @@ def test_cli_recovery_does_not_use_a_previous_attempt_error(setup):
     output=store.folder/'asr-cli.out.log';output.write_text('{"ok":false,"error":"Fun-ASR HTTP 503"}\n')
     store.update(asr={'submission':'unknown','exit_code':2,'finished_at':'now',
                       'stdout_log':str(output),'stdout_offset':output.stat().st_size})
-    assert asr.retryable_cli_failure(store) is None
+    assert asr.retryable_cli_failure(store) == 'funasr_cli_terminated:2'
 
 
-def test_explicit_cli_retry_limit_is_bounded(setup):
-    _,store,source,_=setup
+def test_transcription_succeeds_after_more_than_three_attempts(setup,monkeypatch):
+    cfg,store,source,raw=setup
     output=store.folder/'asr-cli.out.log';output.write_text('{"ok":false,"error":"Fun-ASR HTTP 503"}\n')
-    store.update(asr={'submission':'unknown','attempt':3,'exit_code':2,'finished_at':'earlier','stdout_log':str(output)})
-    with pytest.raises(Attention,match='retry_limit_exceeded'):
-        asr.recognize(setup[0],store,source)
+    store.update(asr={'submission':'unknown','attempt':8,'exit_code':2,'finished_at':'earlier','stdout_log':str(output)})
+    cfg.transcription_cli=store.folder/'fixture.py';cfg.transcription_cli.write_text('fixture')
+    class Process:
+        pid=456
+        def wait(self,timeout):
+            atomic(store.folder/'funasr/raw.json',raw)
+            return 0
+    monkeypatch.setattr(asr.subprocess,'Popen',lambda *a,**k:Process())
+    assert asr.recognize(cfg,store,source)=='Accepted words.'
+    assert store.read()['asr']['attempt']==9
 
 
 def chunk_fixture(store):
@@ -141,7 +161,7 @@ def test_local_launch_failure_is_logged_as_not_submitted(setup,monkeypatch):
     assert (store.folder/'asr-cli.err.log').exists()
 
 
-def test_unknown_provider_failure_keeps_pid_exit_and_logs_without_replay(setup,monkeypatch):
+def test_exited_cli_without_receipt_retries_and_preserves_logs(setup,monkeypatch):
     cfg,store,source,_=setup
     cfg.transcription_cli=store.folder/'public-cli.py';cfg.transcription_cli.write_text('print(1)')
     class Process:
@@ -154,9 +174,10 @@ def test_unknown_provider_failure_keeps_pid_exit_and_logs_without_replay(setup,m
         return Process()
     monkeypatch.setattr(asr.subprocess,'Popen',launch)
     with pytest.raises(Attention,match='cli_failed'): asr.recognize(cfg,store,source)
-    with pytest.raises(UnknownOutcome): asr.recognize(cfg,store,source)
+    with pytest.raises(Attention,match='cli_failed'): asr.recognize(cfg,store,source)
     stage=store.read()['asr']
-    assert stage['pid']==42 and stage['exit_code']==1 and len(calls)==1
+    assert stage['pid']==42 and stage['exit_code']==1 and len(calls)==2
+    assert stage['attempts'][0]['exit_code']==1
     assert 'public failure' in (store.folder/'asr-cli.err.log').read_text()
 
 

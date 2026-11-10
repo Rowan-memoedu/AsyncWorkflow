@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>录音处理</title>
+  <link rel="stylesheet" href="assets/tokens.css">
+  <link rel="stylesheet" href="assets/app.css">
+  <script src="assets/app.js" defer></script>
+</head>
+<body>
+  <header class="masthead"><a href="./" class="wordmark">录音去向<span id="location" class="local">本机</span></a><button id="refresh">刷新状态</button></header>
+  <main>
+    <section class="overview" aria-labelledby="overview-title">
+      <div><p class="eyebrow">RECORDINGS</p><h1 id="overview-title">录音与处理记录</h1><p id="health" class="muted" role="status">正在读取处理记录…</p><p id="processed" class="muted" role="status">最近处理：正在读取…</p></div>
+      <dl class="metrics"><div><dt>全部录音</dt><dd id="total">—</dd></div><div><dt>已正确归档</dt><dd id="verified">—</dd></div><div><dt>堵塞待恢复</dt><dd id="blocked">—</dd></div></dl>
+    </section>
+    <div id="error" class="notice" role="alert" hidden></div>
+    <section class="workspace" aria-label="录音列表和处理详情">
+      <div class="library">
+        <div class="filters">
+          <label for="search">搜索录音正文</label>
+          <div class="searchbox"><input id="search" type="search" placeholder="文件名、原始转写、整理正文" autocomplete="off"><kbd>Ctrl K</kbd></div>
+          <div class="filter-row"><select id="status" aria-label="处理状态"><option value="">全部状态</option><option value="blocked">堵塞待恢复</option><option value="verified">已正确归档</option><option value="pending">待处理</option><option value="running">处理中</option><option value="needs_input">等待用户输入</option><option value="submitted">已提交 Thread</option><option value="command_done">命令完成待验收</option><option value="retained">保留未纳入</option><option value="cancelled">已撤回</option><option value="unknown">状态不可核对</option></select><select id="period" aria-label="录音日期"><option value="all">全部日期</option><option value="today">今天</option><option value="week">近 7 天</option></select></div>
+          <p id="count" class="muted small" aria-live="polite">加载中…</p>
+        </div>
+        <div id="list" class="recordings" aria-label="录音结果"></div>
+        <button id="more" class="more" hidden>显示更多</button>
+      </div>
+      <article id="detail" class="detail" aria-label="录音详情"><div class="empty"><span class="index-mark">01 /</span><h2>查看一条录音</h2><p>选择左侧录音，查看转写、内容分块、实际归档位置和对应 Thread。</p><p class="muted small">输入正文关键词，可以追溯一项想法最后去了哪里。</p></div></article>
+    </section>
+  </main>
+  <footer><span id="source-label">本机录音 · 按录音日期排列</span><span id="updated">每 30 秒刷新显示</span></footer>
+  <div id="toast" role="status" class="toast" hidden></div>
+</body>
+</html>

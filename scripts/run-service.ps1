@@ -1,4 +1,4 @@
-param([ValidateSet('server','runner','watcher','xiaomi','remnote')][string]$Role)
+param([ValidateSet('server','runner','watcher','xiaomi','remnote','dashboard','mirror')][string]$Role)
 $ErrorActionPreference='Stop'
 $projectRoot='D:\Projects\AsyncWorkflow'
 $runtimeRoot='D:\AppData\AsyncWorkflow'
@@ -29,6 +29,8 @@ switch($Role) {
   runner { & $python -m async_workflow.cli serve 2>&1 | Out-File -FilePath "$runtimeRoot\logs\runner.output.log" -Append -Encoding utf8 }
   watcher { & $python -m async_workflow.cli watch 2>&1 | Out-File -FilePath "$runtimeRoot\logs\watcher.output.log" -Append -Encoding utf8 }
   remnote { & $python -m async_workflow.remnote_bridge }
+  dashboard { & $python -m async_workflow.dashboard 2>&1 | Out-File -FilePath "$runtimeRoot\logs\dashboard.output.log" -Append -Encoding utf8 }
+  mirror { & $python -m async_workflow.mirror_sync 2>&1 | Out-File -FilePath "$runtimeRoot\logs\mirror.output.log" -Append -Encoding utf8 }
   xiaomi {
     $env:SERVER_PORT='43140'
     $env:APP_DB_PATH="$runtimeRoot\xiaomi\xiaomi.db"

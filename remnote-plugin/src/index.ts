@@ -13,10 +13,8 @@ async function activate(plugin:ReactRNPlugin) {
   async function connect() {
     if(stopped) return;
     try {
-      const base='http://localhost:43141';
-      const response=await fetch(`${base}/bootstrap`,{cache:'no-store'});
-      if(!response.ok) throw new Error('bootstrap_unavailable');
-      const {token}=await response.json();
+      const token=(globalThis as typeof globalThis & {__ASYNC_BRIDGE_TOKEN?:string}).__ASYNC_BRIDGE_TOKEN;
+      if(!token) throw new Error('plugin_frame_credential_missing');
       const kb=await plugin.kb.getCurrentKnowledgeBaseData();
       const current=new WebSocket('ws://localhost:43141/plugin-socket');
       socket=current;

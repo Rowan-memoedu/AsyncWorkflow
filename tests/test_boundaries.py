@@ -63,9 +63,13 @@ def item(kind,ids,**kw):
     return {"kind":kind,"spans":[{"unit":n} for n in ids],"reason":"fixture",**kw}
 
 
-def test_natural_command_no_keyword_gate():
+def test_natural_request_without_secretary_cannot_execute():
     raw="帮我查一下月球的半径。一个灵感是先记录来源。"
     data={"items":[item("command",[0],route="codex",intent_evidence="帮我查一下月球的半径"),item("inspiration",[1])]}
+    with pytest.raises(ValueError,match='secretary'):
+        validate_split(VoiceDumpSplitResult.model_validate(data),raw)
+    raw='秘书，'+raw
+    data['items'][0]['intent_evidence']='秘书，帮我查一下月球的半径'
     result=validate_split(VoiceDumpSplitResult.model_validate(data),raw)
     assert result[0]["raw_text"]==units(raw)[0]["text"]
     assert len(result)==2
@@ -88,8 +92,8 @@ def test_missing_or_overlapping_sources_fail(ids):
 
 
 def test_cancel_and_dependency():
-    raw="请检查文档。取消刚才的检查。"
-    data={"items":[item("command",[0],route="codex",intent_evidence="请检查文档"),item("record",[1],supersedes=[0])]}
+    raw="秘书，请检查文档。取消刚才的检查。"
+    data={"items":[item("command",[0],route="codex",intent_evidence="秘书，请检查文档"),item("record",[1],supersedes=[0])]}
     result=validate_split(VoiceDumpSplitResult.model_validate(data),raw)
     assert result[0]["cancelled"]
     data["items"][0]["depends_on"]=[1]
