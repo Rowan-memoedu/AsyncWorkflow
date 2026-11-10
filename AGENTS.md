@@ -1,5 +1,8 @@
 # AsyncWorkflow
 
+- 代码提交、PR 合并、同步与共享边界遵守 [CONTRIBUTING.md](CONTRIBUTING.md)。历史任务授权、私人账号及生产数据权限不随源码共享转移给其他成员或 Agent。
+
+
 - 录音执行 Thread 的 WakeWire 入口与边界见 [docs/wakewire.md](docs/wakewire.md)。只替换原生 SDK 传输，保留正文、收据和其他流程；后续开发先核对该文件及现役源码。
 
 Windows 本地异步录音处理：Prefect 编排，FUN-ASR 转写，冻结 prompt 整理，独立 RemNote 插件和官方 Codex App Server 输出。
