@@ -19,7 +19,7 @@ from .core import Settings, Attention, atomic, digest, now, read_json
 from . import refinement as policy
 from .markdown import parse_outline
 
-VERSION = 'dictation-openai-v1'
+VERSION = 'dictation-openai-v2'
 MODEL = 'writing-router'
 PORT = 43143
 DEADLINE_SECONDS = 27
@@ -46,8 +46,15 @@ def extract_source(body):
     if len(users) != 1 or not isinstance(users[0].get('content'), str):
         raise ValueError('unsupported_source_envelope')
     text = users[0]['content']
-    # Plain single-turn input is the standard Chat Completions text envelope.
-    # Native wrapped input is added only after an actual client request is captured.
+    # Shandianshuo 0.8.2's actual connection probe/VoiceInput envelope.
+    # Strip only the protocol prefix, never a matching phrase in ordinary input.
+    native = any(m.get('role') == 'system' and isinstance(m.get('content'), str)
+                 and m['content'].startswith('你是语音输入文本整理器，不是对话助手。') for m in messages)
+    if native:
+        prefix = 'ASR 原文：\n'
+        if not text.startswith(prefix):
+            raise ValueError('unsupported_native_source_envelope')
+        text = text[len(prefix):]
     if not text.strip() or len(text) > 120000:
         raise ValueError('source_empty_or_too_large')
     return text

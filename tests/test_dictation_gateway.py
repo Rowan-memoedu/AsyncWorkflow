@@ -44,6 +44,29 @@ def body(text='原始内容，保留语气。', **extra):
 HEADERS = {'Authorization': 'Bearer synthetic-client-token'}
 
 
+def test_observed_native_envelope_passes_only_transcript_to_both_stages(cfg, backend):
+    post, calls = backend
+    native = body('ASR 原文：\n我其实还想慢慢把这件事说清楚。')
+    native['messages'][0]['content'] = '你是语音输入文本整理器，不是对话助手。\n\n# 执行环境\n- 输入：ASR 语音识别的原始文本'
+    client = TestClient(g.create_app(lambda: cfg, post))
+    assert client.post('/v1/chat/completions', json=native, headers=HEADERS).status_code == 200
+    for endpoint, payload in calls:
+        source = payload['input'] if endpoint == '/decisions' else payload['input'][0]['content']
+        assert json.loads(source) == {'recording_transcript': '我其实还想慢慢把这件事说清楚。'}
+
+
+def test_protocol_prefix_in_plain_transcript_is_not_stripped():
+    source = 'ASR 原文：\n这是文章里的一段引用。'
+    assert g.extract_source(body(source)) == source
+
+
+def test_unknown_native_wrapper_is_rejected():
+    native = body('Changed protocol\n原始内容')
+    native['messages'][0]['content'] = '你是语音输入文本整理器，不是对话助手。'
+    with pytest.raises(ValueError, match='unsupported_native_source_envelope'):
+        g.extract_source(native)
+
+
 def test_native_compatibility_json_and_sse_preserve_exact_tail(cfg, backend):
     post, calls = backend
     client = TestClient(g.create_app(lambda: cfg, post))

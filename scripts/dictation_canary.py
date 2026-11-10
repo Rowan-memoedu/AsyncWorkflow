@@ -16,6 +16,8 @@ CASES = [
      ['$x', '$y', '\\frac{a}{b}', '不要']),
     ('tone', 'writing', '我问他，你真的愿意再等一会儿吗？他说，嗯，我愿意。听到这句话，我才稍微松了一口气。',
      ['嗯，我愿意', '才稍微松了一口气']),
+    ('discourse', 'writing', '我其实担心的，是把注意力弄丢。你知道吧，就是说，我们要防止注意力被打断，嗯，把它放回自己真正想做的事情上。',
+     ['其实担心', '防止注意力被打断', '真正想做']),
 ]
 
 
@@ -39,6 +41,8 @@ def main():
             checks = {'route':actual_route==route, 'required_terms':all(t in value for t in terms),
                       'bullet_format':compile_bullets(value)==value, 'trailing_empty_bullet':value.endswith('\n- '),
                       'no_filler': '嗯' not in value if name!='tone' else True}
+            if name == 'discourse':
+                checks['no_discourse_padding'] = '你知道吧' not in value and '就是说' not in value
             result = {'name':name, 'passed':all(checks.values()), 'route':actual_route,
                       'source':source, 'output':value, 'checks':checks,
                       'seconds':round(time.monotonic()-started, 3)}
