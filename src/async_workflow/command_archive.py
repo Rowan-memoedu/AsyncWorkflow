@@ -141,6 +141,8 @@ def prepare(cfg, store, operation):
         selected.append(part)
     plan = {'operation': operation, 'stage': 'archive_commands', 'at': now(), 'revision': revision,
             'production_model': cfg.production_model,
+            'refinement_policy': cfg.refinement_policy, 'refinement_identity': splitter.refinement_identity(cfg),
+            'refinement_model': cfg.refinement_model if cfg.refinement_policy == 'content_routed' else cfg.production_model,
             'source_transcript_hash': digest(source), 'reused_asr': True,
             'new_outline_calls': sum('reuses_effect' not in p for p in selected),
             'decisions': decisions, 'superseded_keys': sorted(superseded), 'segments': selected,

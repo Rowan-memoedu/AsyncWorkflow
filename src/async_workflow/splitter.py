@@ -232,7 +232,17 @@ def record_usage(settings, operation, response):
                 "provider":getattr(response, 'provider', 'unknown'), "usage":usage}) + "\n")
 
 
+def refinement_identity(settings: Settings) -> str:
+    if settings.refinement_policy == 'content_routed':
+        from .refinement import identity
+        return identity(settings)
+    return PROMPT_HASH
+
+
 def refine(settings: Settings, text: str) -> str:
+    if settings.refinement_policy == 'content_routed':
+        from .refinement import refine as routed_refine
+        return routed_refine(settings, text)
     prompt_bytes = settings.prompt.read_bytes()
     if digest(prompt_bytes) != PROMPT_HASH:
         raise Attention("frozen_prompt_hash_mismatch")

@@ -4,9 +4,9 @@
 
 - 录音执行 Thread 的 WakeWire 入口与边界见 [docs/wakewire.md](docs/wakewire.md)。只替换原生 SDK 传输，保留正文、收据和其他流程；后续开发先核对该文件及现役源码。
 
-- 本地录音生产的 LLM 仅使用现有 Codex Exec 传输层，不回退 DeepSeek；`production_model` 控制实际模型。保留冻结 prompt、成功转写和已执行副作用；个人网站及软件 API 配置不属于本流程迁移范围。
+- 普通单人录音的正文整理可启用 `refinement_policy=content_routed`：GPT Luna Decisions API 判断写作/非写作，Responses API 按分支整理；模型与共享凭据配置、验收和恢复见 `docs/writing-refinement.md`。语义拆分、归档路由和会议整理仍使用现有 Codex Exec 与 `production_model`，任何路线均不自动跨供应商回退。保留旧冻结 prompt、成功转写和已执行副作用；提示词变化不得自动重放历史结果。
 
-Windows 本地异步录音处理：Prefect 编排，FUN-ASR 转写，冻结 prompt 整理，独立 RemNote 插件和官方 Codex App Server 输出。
+Windows 本地异步录音处理：Prefect 编排，FUN-ASR 转写，按内容选择正文整理提示词，独立 RemNote 插件和官方 Codex App Server 输出。
 
 - 源码只在此仓库；运行数据 D:/AppData/AsyncWorkflow，产物 D:/Artifacts/AsyncWorkflow，缓存 D:/Caches/AsyncWorkflow。
 - 新增录音自动入口按用户 2026-10-07 明确授权已开启；历史云端 ID、哈希及启用前录音时间排除在自动处理之外。监控启用状态已读回，下一条真实手机新增录音完整链路仍待观察；服务运行不等于完整功能验收。

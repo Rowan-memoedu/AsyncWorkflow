@@ -87,6 +87,11 @@ class Settings(BaseModel):
     deepseek_model: str = "deepseek-flash"
     production_backend: Literal['codex_exec'] = 'codex_exec'
     production_model: str = 'gpt-6-luna'
+    # Explicit activation preserves already deployed legacy/meeting behavior.
+    refinement_policy: Literal['legacy', 'content_routed'] = 'legacy'
+    refinement_model: str = 'gpt-6-luna'
+    refinement_reasoning: Literal['none', 'low', 'medium', 'high'] = 'low'
+    openai_env_file: Path = Path('D:/AppData/OpenAI/.env.local')
     asr_provider: Literal["funasr", "bailian"] = "funasr"
     asr_model: str = "fun-asr-realtime"
     transcription_cli: Path = Path.home() / ".codex/skills/global-transcription/scripts/transcribe.py"
