@@ -6,6 +6,8 @@ import json
 import re
 import subprocess
 import sys
+import psutil
+from filelock import FileLock
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -20,32 +22,61 @@ BASE = "https://dashscope.aliyuncs.com/api/v1"
 
 
 def retryable_cli_failure(manifest: Manifest) -> str | None:
-    """Recognize a finished CLI's explicit failure, never a lost/active request."""
+    """FUN-ASR is read-only: every terminated attempt may be retried, without a cap."""
     stage = manifest.read().get('asr', {})
-    if stage.get('exit_code') != 2 or not stage.get('finished_at'):
+    if stage.get('exit_code') is None or not stage.get('finished_at'):
         return None
     if (manifest.folder/'asr.json').exists() or (manifest.folder/'funasr/raw.json').exists():
         return None
     path = Path(stage.get('stdout_log') or manifest.folder/'asr-cli.out.log')
+    fallback = 'funasr_cli_terminated:' + str(stage['exit_code'])
     if not path.is_file():
-        return None
+        return fallback
     with path.open('rb') as stream:
         stream.seek(max(stage.get('stdout_offset', 0), max(0, path.stat().st_size-65536)))
         lines = stream.read().decode('utf-8', errors='replace').splitlines()
     try:
         receipt = json.loads(next(line for line in reversed(lines) if line.strip()))
     except (ValueError, StopIteration):
-        return None
+        return fallback
     if not isinstance(receipt, dict):
-        return None
+        return fallback
     error = receipt.get('error', '') if receipt.get('ok') is False else ''
-    transient = (
-        r'Fun-ASR service error: (CLIENT_ERROR|SERVER_ERROR|InternalError|Throttling)',
-        r'Fun-ASR HTTP (429|500|502|503|504)',
-        r'Fun-ASR HTTP stream failure: (URLError|TimeoutError|RemoteDisconnected|IncompleteRead|SSLError)',
-        r'Fun-ASR (final sentence has invalid timestamps|stream ended with unfinished sentences|returned an empty transcript)',
-    )
-    return error if isinstance(error, str) and any(re.fullmatch(p, error) for p in transient) else None
+    return error if isinstance(error, str) and error else fallback
+
+
+def reconcile_cli(cfg, manifest, source, stage):
+    """Do not run two transcribers. Expire only this recording's proven local child."""
+    if not stage.get('pid'):
+        raise UnknownOutcome('funasr_submission_unknown_no_process_evidence')
+    try:
+        process = psutil.Process(stage['pid'])
+        command = process.cmdline()
+        owned = str(cfg.transcription_cli) in command and str(source) in command
+        if stage.get('process_created'):
+            owned = owned and process.create_time() == stage['process_created']
+        if owned:
+            if time.time() - process.create_time() < 3600:
+                raise UnknownOutcome('funasr_existing_process_still_running')
+            children = process.children(recursive=True)
+            for child in reversed(children):
+                try:
+                    child.terminate()
+                except psutil.NoSuchProcess:
+                    pass
+            process.terminate()
+            _, alive = psutil.wait_procs([*children, process], timeout=5)
+            for child in alive:
+                child.kill()
+            _, alive = psutil.wait_procs(alive, timeout=5)
+            if alive:
+                raise UnknownOutcome('funasr_previous_process_not_stopped')
+    except psutil.NoSuchProcess:
+        pass
+    except (psutil.AccessDenied, OSError):
+        raise UnknownOutcome('funasr_process_state_unavailable') from None
+    stage.update(submission='failed', exit_code=-1, finished_at=now(), failure_code='local_process_ended_without_result')
+    manifest.update(asr=stage)
 
 
 def cleanup(bucket, cfg, manifest, stage):
@@ -179,6 +210,11 @@ def restore_funasr_chunks(manifest: Manifest) -> bool:
 
 
 def recognize(cfg: Settings, manifest: Manifest, source: Path) -> str:
+    with FileLock(str(cfg.root/'locks'/('asr-'+manifest.folder.name+'.lock')), timeout=3):
+        return _recognize(cfg, manifest, source)
+
+
+def _recognize(cfg: Settings, manifest: Manifest, source: Path) -> str:
     saved = read_json(manifest.folder / 'asr.json')
     stage = manifest.read().get('asr', {})
     # A provider change never discards an accepted transcript or a pending OSS task.
@@ -190,27 +226,32 @@ def recognize(cfg: Settings, manifest: Manifest, source: Path) -> str:
         return recognize_filetrans(cfg, manifest, source)
     if file_hash(source) != manifest.folder.name:
         raise Attention('funasr_source_changed')
-    output = manifest.folder / 'funasr'
+    output = Path(stage.get('output_dir') or manifest.folder / 'funasr')
+    if not output.resolve().is_relative_to(manifest.folder.resolve()):
+        raise Attention('funasr_receipt_outside_recording')
     raw_path = output / 'raw.json'
-    if not raw_path.exists():
-        restore_funasr_chunks(manifest)
-    if not raw_path.exists():
+    invalid = stage.get('invalid_raw_receipts', [])
+    if not raw_path.exists() and restore_funasr_chunks(manifest):
+        raw_path = manifest.folder / 'funasr/raw.json'
+    if not raw_path.exists() or str(raw_path) in invalid:
         failure = retryable_cli_failure(manifest)
         if stage.get('submission') == 'unknown' and not failure:
-            raise UnknownOutcome('funasr_submission_unknown_no_replay')
+            reconcile_cli(cfg, manifest, source, stage)
         previous_attempt = stage.get('attempt', 1 if stage.get('started_at') else 0)
-        if previous_attempt >= 3:
-            raise Attention('funasr_retry_limit_exceeded')
         if not cfg.transcription_cli.is_file():
             raise Attention('global_transcription_cli_missing')
         history = stage.get('attempts', [])
         if stage.get('started_at'):
             history = [*history, {k:v for k,v in stage.items() if k != 'attempts'}]
+        if output.exists():
+            output = manifest.folder / 'funasr-attempts' / f'{previous_attempt+1:06d}'
+        raw_path = output / 'raw.json'
         stage={'provider':'funasr','model':'fun-asr-realtime',
                'submission':'unknown','output_dir':str(output),'cleaned':True,
                'attempt':previous_attempt+1, 'attempts':history,
                'started_at':now(), 'stdout_log':str(manifest.folder/'asr-cli.out.log'),
                'stderr_log':str(manifest.folder/'asr-cli.err.log')}
+        stage['invalid_raw_receipts'] = invalid
         stdout_path = Path(stage['stdout_log'])
         stage['stdout_offset'] = stdout_path.stat().st_size if stdout_path.exists() else 0
         manifest.update(asr=stage)
@@ -228,13 +269,16 @@ def recognize(cfg: Settings, manifest: Manifest, source: Path) -> str:
                 manifest.update(asr=stage)
                 raise Attention('funasr_local_process_not_started') from None
             stage['pid']=process.pid
+            try:
+                stage['process_created'] = psutil.Process(process.pid).create_time()
+            except psutil.Error:
+                pass
             manifest.update(asr=stage)
             try:
                 code=process.wait(timeout=3600)
             except subprocess.TimeoutExpired:
-                # Retain PID and durable logs. A later receipt can be reused;
-                # timeout never authorizes a second provider submission.
-                raise UnknownOutcome('funasr_submission_unknown_no_replay') from None
+                reconcile_cli(cfg, manifest, source, stage)
+                raise Attention('funasr_timeout_recovered_retry_next_cycle') from None
             stage.update(exit_code=code,finished_at=now())
             manifest.update(asr=stage)
             failure = retryable_cli_failure(manifest)
@@ -243,7 +287,12 @@ def recognize(cfg: Settings, manifest: Manifest, source: Path) -> str:
                 manifest.update(asr=stage)
         if code and not raw_path.exists():
             raise Attention('funasr_cli_failed_receipt_retained')
-    result = normalize_funasr(read_json(raw_path), manifest.folder.name)
+    try:
+        result = normalize_funasr(read_json(raw_path), manifest.folder.name)
+    except (Attention, ValueError, AttributeError):
+        stage.update(submission='failed', invalid_raw_receipts=[*invalid, str(raw_path)])
+        manifest.update(asr=stage)
+        raise
     if file_hash(source) != manifest.folder.name:
         raise Attention('funasr_source_changed')
     atomic(manifest.folder / 'asr.json', result)

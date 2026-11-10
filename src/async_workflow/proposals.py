@@ -8,7 +8,7 @@ def reanalyze(cfg, recording_id):
     transcript=read_json(store.folder/'asr.json')
     if not transcript:
         raise Attention('successful_source_transcript_required')
-    version={'audio':recording_id,'source':digest(transcript['text']),'prompt':PROMPT_HASH,'refine_adapter':splitter.REFINE_REVISION,'splitter':digest(splitter.SYSTEM),'model':cfg.deepseek_model}
+    version={'audio':recording_id,'source':digest(transcript['text']),'prompt':PROMPT_HASH,'refine_adapter':splitter.REFINE_REVISION,'splitter':digest(splitter.SYSTEM),'model':cfg.production_model}
     identity=digest(json.dumps(version,sort_keys=True))
     folder=store.folder/'proposals'/identity
     if (folder/'proposal.json').exists():

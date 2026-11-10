@@ -2,8 +2,21 @@
 
 协作开发、Agent 提交与合并规则见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-
 录音执行 Thread 已接入 WakeWire；传输边界、部署和后续开发入口见 [WakeWire 接入说明](docs/wakewire.md)。转写、正文整理、归档及维护反馈保留现有路径。
+
+分类录音按钮的 Daily Note 去处按已绑定的模板节点 ID 解析当前快照路径；节点改名后，新录音和未提交的旧效果使用同一节点的新路径，口述指定去处仍优先。节点被删除、模板替换或身份不唯一时停止，不按近似名称猜测。Fun-ASR 的 HTTP 失败保留经过字符校验的服务错误码，区分账户状态、额度和普通接口错误，不输出原始错误正文或凭据。
+
+录音查看页：[服务器入口](https://124.221.144.155/recordings/)（登录后访问）与[本地入口](http://127.0.0.1:43142/)。服务器只承载查看功能；电脑约每分钟同步录音列表、转写、整理正文、状态和实际去向。手机分类录音 App 的第二页与电脑浏览器共用服务器网页，电脑离线时仍可查看最后同步结果，新录音处理继续依赖本机后台。部署、凭据与恢复见 [录音去向服务](docs/recording-view.md)。
+
+页面可查看全部本地录音（包括保留未纳入的历史文件），按日期、状态筛选，并搜索文件名、原始转写和整理正文。详情展示待办/笔记/执行命令、实际归档位置、失败原因、尝试次数和对应 Thread；电脑可通过官方 `codex://threads/<thread-id>` 打开对应聊天。没有转写的录音仍可按文件名查找，不能假装正文搜索已覆盖它们。
+
+2026-10-30 历史误判复核：15 条真实录音（5 条执行命令、10 条维护反馈）按明确秘书委托规则完成修正。13 条补入遗漏内容，1 条复用已有内容，1 条只有未说完的开场语而不生成待办。共 15 个正文块（13 个新增、2 个复用），独立 MCP 回读的 164 个正文节点、30 个上下空节点和 9 个目标末尾位置通过；483 项原转写及旧效果记录保持不变。6 个未改动的旧输出可恢复地移入 Trash，1 个已不存在的旧输出不重建，用户写入旧分隔节点的内容保持原位。插件 0.1.12 已加载，55 项插件与 309 项 Python 测试通过；15 个原生修复运行全部完成。完整逐条清单及证据位于 `D:/Artifacts/AsyncWorkflow/2026-10-30-command-audit`。
+
+2026-10-30：恢复扫描取消三次上限，逐项恢复失败任务并复用原 Prefect ID；分块和投递前都执行明确秘书委托规则。真实失败录音已从成功恢复的转写继续归档，网页搜索与 RemNote 独立回读一致。验收材料保存在 `D:/Artifacts/AsyncWorkflow/2026-10-30-dashboard`，私人录音及目标 ID 不进源码仓库。
+
+录音的本地整理、拆分与语义归类使用 Codex Exec，复用渐进阅读的文档生产传输层。`production_model` 默认 `gpt-6-luna`，每次调用独立、只读且不回退 API；原 `deepseek_*` 配置保留为兼容字段，不再决定这些批处理的后端。ASR、RemNote 归档和官方 App Server 命令链保持原流程；已完成录音与副作用不因迁移重放。
+
+2026-10-24 网络兼容修复已部署并完成真实验收：保留沙箱和原有独立桥接协议，通过受 RemNote 宿主嵌入限制的 HTML 交付随机连接凭据，兼容实际的 Origin:null；安装入口同时监听 IPv4、IPv6 回环。Native Mode 试验未通过，已撤回请求，没有修改 RemNote 安装包或增加常驻代理。27 条断线暂停任务及 1 条保存失败任务沿用原 Prefect ID 恢复完成，主 MCP 独立回读的 357 个节点、归档位置与空行全部匹配；463 份原有成果文件及旧已验证效果回执保持不变。275 项 Python 测试通过。录音监控已提交并完成 2 条新增录音，命令扫描也恢复完成，后续半小时原生调度有效。现役结果与分插件验收边界见 `D:/Artifacts/AsyncWorkflow/2026-10-24/repair/修复状态.md`。
 
 2026-10-17 运转检查与修复：后台五项服务健康；启用后的 43 份本地录音均有处理记录。发现并恢复 7 条积压业务任务，相关 19 个 Prefect 运行均完成；补齐 9 个 RemNote 正文块并独立回读位置，另有 1 条反馈已进入原生队列，1 条录音复用已有日会议结果。修复范围包括：同一 flow 的有限暂时错误重试、ASR 明确失败与未知提交的区分、FUN-ASR 分片缓存及无文字尾片处理、复用已确认子分支的准确祖先，以及后台重载时清理残留进程树。已接受的 ASR 和效果回执哈希保持一致。218 项 Python 测试、43 项插件测试、10 项 HTTP 适配测试及公开音频验证通过；最终缓存目录调整另有 37 项针对性回归通过。完整证据：`D:/Artifacts/AsyncWorkflow/2026-10-17/health-repair/结果.md`。
 
@@ -21,19 +34,19 @@
 
 新增录音自动处理于北京时间 14:02:06 开启，每半小时扫描一次。最近五条均已完成或跳过；既有类型准入验收见 `D:/Artifacts/AsyncWorkflow/2026-10-07/recording-types/结果.md`。下一条真实手机新增录音的上传到归档链路仍待观察。
 
-Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → 阿里云 FUN-ASR → 原结构化提示词 / DeepSeek → 语义分块与操作指令分离 → 独立 RemNote 插件、官方 Codex App Server 或已配置 CLI。
+Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → 阿里云 FUN-ASR → 原结构化提示词 / Codex Exec → 语义分块与操作指令分离 → 独立 RemNote 插件、官方 Codex App Server 或已配置 CLI。
 
-主体代码和本机服务已搭建，正式录音入口 `enabled=true`。独立 RemNote 插件当前为 0.1.7；此前 14 个真实正文块的内容、归档位置和上下空行完成独立回读。用户确认的 FUN-ASR 复核结果已接回下游；对应命令经结构化后进入当前“新建文件夹”Project，真实 Thread 完成首轮查询，原生列表已验证项目归属。此前的桌面续接、断线恢复、跨日归档和小米下载完整性验收仍保留。
+主体代码和本机服务已搭建，正式录音入口 `enabled=true`。独立 RemNote 插件当前为 0.1.12；当前归档验收见上方历史误判复核。此前的桌面续接、断线恢复、跨日归档和小米下载完整性验收仍保留；旧任务的 Thread 收据与最新秘书委托准入规则分别保存，规则修订不重放旧动作。
 
 ## 边界
 
 - 录音类型标准见 [本地 Markdown](docs/recording-types.md)：普通日期录音须短于 20 分钟且确认为单人自述；交流录音不限该时长，按对象配置采用已核验声道或 FUN-ASR 现场说话人分离。同一对象同一天合并为一份，固定输出“共识、继续讨论、无用的闲聊”；共识不标说话人，未被反驳的观点也收入，未决问题与明确分歧单列。完整内容归入对象文档的日期/会议记录，不执行会议内命令。`meetings --run` 与半小时扫描共用这一路径。
 - `batch --latest 5 --manual` 按录音时间顺序处理有限批次，不打开自动入口；`--cutoff` 可冻结批次选择范围。完整结果跳过，失败重试同一个 Prefect 任务，转写／结构化／归档成功环节复用；提交结论保留在各录音 manifest 的 `submission_log`。
 
-- 新命令通过官方 `openai-codex` SDK 创建持久 Thread，先保存 Thread ID，再提交并保存 Turn ID。用户直接在该 Thread 继续；桌面持有写入权时不创建替代 Thread。
+- 录音默认按内容保存到 todo list 或专门笔记。只有明确委托 secretary/秘书执行实际任务才创建 Thread；请秘书记下、保存或加入待办仍是记录。分块规则和最终投递前的原文检查共同约束新任务及未提交的旧任务；已提交或结果未知的旧动作只核对原收据。新命令通过官方 `openai-codex` SDK 创建持久 Thread，先保存 Thread ID，再提交并保存 Turn ID。用户直接在该 Thread 继续；桌面持有写入权时不创建替代 Thread。
 - 所有输出先区分承载操作和正文：新建/命名/定位 document 或 Thread 的说明留作操作元数据，实际正文沿用冻结提示词整理。Codex 收到整理后的任务正文，查询、执行要求及限制不会被当成容器指令移除。
 - Thread 消息只有整理后的正文；续接只有用户补充原话，不加提示前后缀。Codex 正常输出自然语言与 Markdown，不设置输出 schema；本机通过官方 Turn 状态记录运行完成、失败或中断，不能把回合完成当成业务目标已经通过验收。
-- 录音中针对工作流本身的反馈先单独提取，普通正文继续整理归档。路由规则、分类要求和其他工作流反馈统一进入当前“异步工作流维护 (2)”Thread，绑定以本机 `feedback_thread_id` 为准；原“异步工作流维护”已存档。真实歧义在现役 Thread 讨论；引用、假设、已撤回要求不触发修改。
+- 只有明确让 secretary/秘书处理、检查、修改或更新这套录音处理工作流，才分离为维护反馈，送入当前“异步工作流维护 (3)”Thread；绑定以本机 `feedback_thread_id` 为准。其他软件和项目的任务不会进入维护 Thread；没有明确秘书执行委托的内容继续记录归档。此前维护 Thread 已存档，引用、假设、已撤回要求不触发修改。
 - 固定维护 Thread 的投递使用 App Server 原生 `thread/queue/add`，按原生消息 ID 从队列和回合回读去重；不抢占桌面写入者。更换绑定仅影响未投递的新反馈，已提交或结果未知的旧消息继续保留原 Thread 与投递收据，核对后处理，不自动重发到新目标或回退到已存档目标。入队、收到消息和落实修改分别核验，不把投递成功当作规则已生效。
 - 新 Thread 的 `command_workspace` 固定为用户指定工作区；`command_project_id` 必须是官方 `project/list` 返回的项目 ID。用 `project/read` 核对路径，在 `thread/start` 直接传 `projectId`，核对返回的项目和路径后提交正文，再命名。`turn/start` 返回时文件仍可能尚未刷盘，命名仅对该 ID 的空 rollout 错误作有限重试，仍失败则在首轮完成后补试，不重发正文。宿主工具中的 `local-...` ID 与 App Server 项目 ID 不可混用。
 - 如果旧收据停在 `thread_created` 且没有 Turn ID，先尝试恢复原 Thread；只有官方明确返回该 ID 的 `no rollout found` 才新建，并在 `pre-turn-recoveries.json` 保留旧收据和错误。网络异常、`thread not loaded`、提交结果不明或已有 Turn ID 均不触发重建。
@@ -72,13 +85,15 @@ Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → 阿里�
 
 在 `remnote-plugin` 目录执行 `npm run check`、`npm test`、`npm run build`。Python 运行依赖锁定在 `requirements.lock`；插件依赖锁定在 `package-lock.json`。初始化安装使用 D 盘虚拟环境和缓存；账户绑定保存在本机 DPAPI 加密文件。
 
-启动项由 `scripts/install-startup.ps1` 管理，角色为 server、runner、watcher、xiaomi、remnote。服务只监听本机。`disable` 只停止新增录音进入处理链，不中断已有任务。
+启动项由 `scripts/install-startup.ps1` 管理，角色为 server、runner、watcher、xiaomi、remnote、dashboard。服务只监听本机。`disable` 只停止新增录音进入处理链，不中断已有任务。单独启动状态页：`pwsh -File scripts/install-startup.ps1 -Roles dashboard -Start`；前台排障可运行 `python -m async_workflow.dashboard`。
 
 Prefect 的 server、runner、watcher 使用计划任务优先级 4（普通 CPU、I/O 和内存优先级）；默认 7 在桌面负载下曾导致导入依赖和 API 响应明显停滞。三项服务的原生输出保存在 `logs/<role>.output.log`，不能只凭进程存活判断健康。Prefect 3.8.7 固定配合 SQLAlchemy 2.0.54；2.1.2 已实测触发调度批量写入的 `bulk_dml` 错误。
 
 后台代码重载使用 `pwsh -NoProfile -File scripts/restart-services.ps1 -Roles runner,watcher`。它先确认无正在执行的 flow，再对准确服务进程树停止和重启，并核对 PID 创建时间；直接停止 headless conhost 的计划任务可能留下占锁的旧 Python 进程，后续子进程会因控制台失效而崩溃。该脚本只管理本流程后台服务。
 
-恢复扫描对已知模型网络故障及有明确 CLI 失败回执的暂时 ASR 故障，最多恢复到同一 flow 的第 3 次执行；未知提交、鉴权错误、人工待答和未确认结构冲突保持可见。FUN-ASR CLI 的成功分片存于录音目录的 `funasr-chunks`（与最终 `funasr` 输出目录同级），后续失败不丢弃已完成分片。仅服务明确返回 `ASR_RESPONSE_HAVE_NO_WORDS` 且该分片没有任何文字事件时将其记为空片；整段无文字仍报错。完整回执可以离线恢复最终转写，成功结果不再向服务重复请求。
+恢复扫描随 watcher 启动立即运行，此后每 30 分钟运行：所有失败和崩溃均沿用原 Prefect flow 持续重试，不设三次上限。一条损坏记录或查询失败不阻塞其他录音；机器依赖和插件重连在条件就绪后恢复。卡在运行/提交中的任务只在等待超过一个周期、并确认本地工作进程不存在时恢复。`recovery-status.json` 保存最近检查、重试和错误，页面每 30 秒刷新显示。人工待答保持待答，未知 Thread/笔记提交自动核对原收据，不重复执行副作用。
+
+FUN-ASR 的已退出失败进程可持续重试；活进程不并发重启，超过一小时且 PID、命令和录音身份核对一致的子进程才会终止后重试。原输出和尝试历史保留，新尝试使用独立输出位置。成功分片保存在 `funasr-chunks`，完整源绑定回执可离线恢复最终转写；仅服务明确返回 `ASR_RESPONSE_HAVE_NO_WORDS` 且没有文字事件时接受空片，整段无文字仍报错。已接受的转写不重新上传。
 
 ## 下一步验收
 

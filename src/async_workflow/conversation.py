@@ -64,7 +64,7 @@ def outline(cfg, store, transcript):
     if digest(prompt)!=PROMPT_HASH:
         raise Attention('frozen_prompt_hash_mismatch')
     reference = transcript.get('accepted_text_reference', read_json(store.folder/'asr.json',{}).get('text',''))
-    signature = digest(transcript['text']+reference+prompt.decode('utf-8-sig')+POLICY+cfg.deepseek_model)
+    signature = digest(transcript['text']+reference+prompt.decode('utf-8-sig')+POLICY+cfg.production_identity)
     path = store.folder/'conversation'/('outline-'+signature+'.json')
     saved = read_json(path)
     if saved:

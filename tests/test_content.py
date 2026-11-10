@@ -4,14 +4,14 @@ from async_workflow.splitter import VoiceDumpSplitResult, validate_split
 
 @pytest.mark.parametrize('kind,route', [('record','remnote'),('command','codex')])
 def test_container_control_and_task_body_share_one_unit_without_loss(kind,route):
-    source='新建一个条目，比较这两种协议，保留成本限制。'
+    source='新建一个条目，秘书，比较这两种协议，保留成本限制。'
     control='新建一个条目，'
-    item={'kind':kind,'route':route,'reason':'fixture','intent_evidence':'比较这两种协议',
+    item={'kind':kind,'route':route,'reason':'fixture','intent_evidence':'秘书，比较这两种协议',
           'spans':[{'unit':0,'quote':control,'role':'control'},
                    {'unit':0,'quote':source[len(control):],'role':'content'}]}
     result=validate_split(VoiceDumpSplitResult.model_validate({'items':[item]}),source)[0]
     assert result['raw_text']==source
-    assert result['content_text']=='比较这两种协议，保留成本限制。'
+    assert result['content_text']=='秘书，比较这两种协议，保留成本限制。'
     assert result['control_spans']==[[0,len(control)]]
     item['spans'].pop()
     with pytest.raises(ValueError,match='coverage|source evidence'):

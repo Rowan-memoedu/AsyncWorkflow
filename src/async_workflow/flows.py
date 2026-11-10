@@ -11,8 +11,9 @@ from prefect.flow_runs import suspend_flow_run
 from prefect.input import RunInput
 from pydantic import Field
 
-from . import asr, executor, remnote, splitter, feedback
+from . import asr, executor, remnote, splitter, feedback, dispatch_policy
 from . import recording_types, conversation
+from .recovery import worker_started
 from .core import Settings, Manifest, Attention, UnknownOutcome, atomic, digest, file_hash, safe_source, source_metadata, probe, eligibility, read_json
 
 
@@ -40,6 +41,7 @@ def analyze_recording(path: str, canary: bool = False):
     source = safe_source(Path(path), cfg.inbox)
     recording_id = file_hash(source)
     manifest = Manifest(cfg, recording_id)
+    worker_started(manifest)
     if cfg.conversation_profiles:
         from . import meetings
         if recording_types.meeting_contact(cfg, source.name, source_metadata(source, cfg)):
@@ -79,13 +81,13 @@ def analyze_recording(path: str, canary: bool = False):
             feedback_plan = feedback.prepare(cfg, manifest, text)
             text = feedback_plan['remaining_text']
         refine = lambda body: recording_types.cached_outline(cfg, manifest, body,
-            lambda value: outline_task(value, cfg.deepseek_model, splitter.PROMPT_HASH, splitter.REFINE_REVISION))
+            lambda value: outline_task(value, cfg.production_identity, splitter.PROMPT_HASH, splitter.REFINE_REVISION))
         if recording_kind != 'conversation':
             outline = refine(text) if text.strip() else ''
         atomic(manifest.folder / "outline.md", outline, text=True)
         parts = ([recording_types.conversation_part(recording_id, text, outline)] if recording_kind == 'conversation'
-                 else split_task(text, outline, cfg.deepseek_model, digest(splitter.SYSTEM)) if text.strip() else [])
-        version = {"audio": recording_id, "asr":read_json(manifest.folder/'asr.json',{}).get('model',cfg.asr_model), "model":cfg.deepseek_model, "prompt":splitter.PROMPT_HASH, "refine_adapter":splitter.REFINE_REVISION, "splitter":digest(splitter.SYSTEM), "feedback":feedback_plan['extractor_revision'], "schema":1}
+                 else split_task(text, outline, cfg.production_identity, digest(splitter.SYSTEM)) if text.strip() else [])
+        version = {"audio": recording_id, "asr":read_json(manifest.folder/'asr.json',{}).get('model',cfg.asr_model), "model":cfg.production_model, "prompt":splitter.PROMPT_HASH, "refine_adapter":splitter.REFINE_REVISION, "splitter":digest(splitter.SYSTEM), "feedback":feedback_plan['extractor_revision'], "schema":1}
         version_id = digest(json.dumps(version, sort_keys=True))
         for item in parts:
             item.setdefault("key", digest(recording_id + ":" + data.get('source_revision','') + str(item["source_spans"]))[:24])
@@ -95,7 +97,7 @@ def analyze_recording(path: str, canary: bool = False):
             atomic(manifest.folder / (item["key"] + ".md"), item["markdown"], text=True)
             atomic(manifest.folder / (item["key"] + ".json"), {"recording":{"id":recording_id, "audio":str(source), "duration":duration, **provenance}, "analysis_version":version_id, "segment":{k:v for k,v in item.items() if k != "markdown"}})
         atomic(manifest.folder / "analysis-version.json", version)
-        manifest.update(segments=parts, prompt_hash=splitter.PROMPT_HASH, model=cfg.deepseek_model, analysis_version=version_id)
+        manifest.update(segments=parts, prompt_hash=splitter.PROMPT_HASH, model=cfg.production_model, analysis_version=version_id)
     if file_hash(source) != recording_id:
         raise Attention("source_changed_during_analysis")
     runs = manifest.read().get("segment_runs", {})
@@ -113,6 +115,10 @@ def analyze_recording(path: str, canary: bool = False):
 def process_workflow_feedback(recording_id: str):
     cfg=Settings.load()
     store=Manifest(cfg,recording_id)
+    worker_started(store)
+    from .command_archive import replacement
+    if corrected := replacement(store.read(), store.read().get('workflow_feedback', {}).get('key')):
+        return corrected
     source=read_json(store.folder/'asr.json')
     if not source or not source.get('text'): raise Attention('successful_source_transcript_required')
     item=feedback.prepare(cfg,store,source['text'])
@@ -121,6 +127,19 @@ def process_workflow_feedback(recording_id: str):
         result={'status':'cancelled','kind':'workflow_feedback'}
         store.save_effect(item['key'],result)
         return result
+    existing = store.effect(item['key'])
+    if existing and existing.get('status') in ('verified', 'cancelled'):
+        return existing
+    decision = store.read().get('feedback_dispatch_policy')
+    if not dispatch_policy.has_submission(existing):
+        decision = dispatch_policy.decide(cfg, store, item['raw_text'])
+        store.update(feedback_dispatch_policy=decision)
+    if decision and decision['route'] != 'workflow':
+        body = recording_types.cached_outline(cfg, store, item['raw_text'], lambda text: splitter.refine(cfg, text))
+        archived = dispatch_policy.archival_item({**item, 'markdown': body}, decision)
+        if decision['route'] == 'command':
+            archived.update(kind='command', route='codex')
+        return perform(cfg, store, item['key'], archived)
     if feedback.pending_documents(store.read(),item):
         suspend_flow_run(key='feedback-document-dependency')
         if feedback.pending_documents(store.read(),item): raise Attention('feedback_document_dependency_not_verified')
@@ -132,15 +151,32 @@ def process_workflow_feedback(recording_id: str):
 def process_segment(recording_id: str, index: int):
     cfg = Settings.load()
     manifest = Manifest(cfg, recording_id)
+    worker_started(manifest)
     data = manifest.read()
     item = dict(data["segments"][index])
     key = item["key"]
+    from .command_archive import replacement
+    if corrected := replacement(data, key):
+        return corrected
     existing = manifest.effect(key)
     if existing and existing["status"] in ("verified", "cancelled"):
         return existing
     if item["cancelled"]:
         manifest.save_effect(key, {"status": "cancelled"})
         return {"status": "cancelled"}
+    if item['kind'] == 'command' and not dispatch_policy.has_submission(existing):
+        decision = dispatch_policy.decide(cfg, manifest, item['raw_text'])
+        if decision['route'] == 'record':
+            item = dispatch_policy.archival_item(item, decision)
+        else:
+            item['dispatch_policy'] = decision
+        with manifest.lock:
+            updated = manifest.read()['segments']
+            updated[index] = item
+            manifest.update(segments=updated)
+    if item.get('dispatch_policy', {}).get('route') == 'workflow':
+        from .feedback_delivery import deliver
+        return deliver(cfg, manifest, key, item['markdown'])
     # Waiting in a separate child deployment leaves other independent segments runnable.
     for dependency in item["depends_on"]:
         previous = manifest.effect(data["segments"][dependency]["key"])

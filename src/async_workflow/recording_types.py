@@ -16,6 +16,10 @@ class SelfRecording(BaseModel):
 
 
 def meeting_contact(cfg, name, provenance):
+    # A typed personal recording must not become a meeting because its label
+    # happens to contain a configured contact name.
+    if provenance.get('capture_schema') == 1:
+        return None
     names = [name, provenance.get('cloud_file_name', '')]
     matches = [contact for contact in cfg.conversation_profiles
                if contact and any(contact.casefold() in value.casefold() for value in names)]
@@ -25,6 +29,11 @@ def meeting_contact(cfg, name, provenance):
 
 
 def kind(cfg, name, duration, provenance):
+    if provenance.get('capture_error'):
+        return 'retained', provenance['capture_error']
+    if provenance.get('capture_schema') == 1:
+        reason = eligibility(name, duration, provenance.get('source_type'))
+        return ('ordinary' if reason == 'eligible' else 'retained', reason)
     if meeting_contact(cfg, name, provenance):
         if not 0 < duration < float('inf'):
             raise Attention('duration_unknown')
@@ -87,7 +96,7 @@ def conversation_part(recording_id, text, outline):
 
 def cached_outline(cfg, manifest, text, refine):
     from .splitter import PROMPT_HASH, REFINE_REVISION
-    signature = digest(text + PROMPT_HASH + REFINE_REVISION + cfg.deepseek_model)
+    signature = digest(text + PROMPT_HASH + REFINE_REVISION + cfg.production_identity)
     path = manifest.folder / ('outline-' + signature + '.json')
     saved = read_json(path)
     if saved:
@@ -98,6 +107,10 @@ def cached_outline(cfg, manifest, text, refine):
 
 
 def fully_processed(data):
+    if data.get('command_archive', {}).get('completed'):
+        from .command_archive import active_parts
+        return all(data.get('effects', {}).get(p['key'], {}).get('status') in
+                   ('verified', 'cancelled', 'completed_unverified') for p in active_parts(data))
     parts = data.get('segments')
     if parts is None or (not parts and not data.get('workflow_feedback_run')):
         return False
@@ -107,6 +120,6 @@ def fully_processed(data):
         return False
     if data.get('workflow_feedback_run'):
         key = data.get('workflow_feedback', {}).get('key')
-        if not key or effects.get(key, {}).get('status') not in ('queued', 'delivered', 'cancelled'):
+        if not key or effects.get(key, {}).get('status') not in ('queued', 'delivered', 'cancelled', 'verified', 'completed_unverified'):
             return False
     return True

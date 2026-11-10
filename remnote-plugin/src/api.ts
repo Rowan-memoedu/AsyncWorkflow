@@ -231,7 +231,7 @@ export class WorkflowAPI {
       if(!allowedParents.includes((await rem.getParentRem())?._id??'')) throw new Error('owned_separator_moved');
     }
   }
-  private async surround(effect:string,state:WriteState,parentId:string) {
+  private async surround(effect:string,state:WriteState,parentId:string,appendLast=false) {
     const recordKey=key(`publish:${effect}`);
     await this.checkSeparators(state,[state.current_parent??JSON.parse(state.signature).parentId,parentId]);
     for(const side of ['before','after'] as const) {
@@ -247,17 +247,20 @@ export class WorkflowAPI {
     const children=(await parent.getChildrenRem()).map(n=>n._id);
     const rootIndex=children.indexOf(state.root_id!);
     if(rootIndex<0) throw new Error('owned_rem_moved');
-    if(children[rootIndex-1]!==ids[0] || children[rootIndex+1]!==ids[2]) {
-      const position=children.slice(0,rootIndex).filter(id=>!ids.includes(id)).length;
+    if(children[rootIndex-1]!==ids[0] || children[rootIndex+1]!==ids[2] ||
+       (appendLast && JSON.stringify(children.slice(-3))!==JSON.stringify(ids))) {
+      // The SDK takes an index in the original sibling list, before removing moved Rems.
+      const position=appendLast?children.length:rootIndex;
       await this.plugin.rem.moveRems(ids,parentId,position);
     }
     const observed=(await (await this.rem(parentId)).getChildrenRem()).map(n=>n._id);
     const start=observed.indexOf(ids[0]);
     if(start<0 || JSON.stringify(observed.slice(start,start+3))!==JSON.stringify(ids)) throw new Error('separator_order_readback_mismatch');
+    if(appendLast && start!==observed.length-3) throw new Error('append_last_readback_mismatch');
     await this.checkSeparators(state,[parentId]);
     for(const side of ['before','after'] as const) state.separators![side].parent=parentId;
     await this.plugin.storage.setLocal(recordKey,state);
-    return {before_id:ids[0],after_id:ids[2],parent_id:parentId,verified:true};
+    return {before_id:ids[0],after_id:ids[2],parent_id:parentId,verified:true,at_end:start===observed.length-3};
   }
   async createDocument(effect:string,title:string,parentId:string|null=null) {
     if(!/^[a-zA-Z0-9:._/-]{1,180}$/.test(effect) || !title?.trim() || title.length>300) throw new Error('document_input_invalid');
@@ -292,14 +295,33 @@ export class WorkflowAPI {
     const state=await this.ensureNode(recordKey,await this.plugin.storage.getLocal<NodeState>(recordKey),branch._id,[software.trim()]);
     return {parent_id:state.id,software:software.trim()};
   }
-  async relocate(effect:string,operation:string,parentId:string,trashId:string,stripMetadata=true) {
+  async retire(effect:string,operation:string,trashId:string) {
+    if(!/^[a-zA-Z0-9:._/-]{1,180}$/.test(effect) || !/^[a-zA-Z0-9:._/-]{1,180}$/.test(operation)) throw new Error('effect_key_invalid');
+    const state=await this.plugin.storage.getLocal<WriteState>(key(`publish:${effect}`));
+    if(!state?.done || !state.root_id) throw new Error('completed_owned_outline_required');
+    const trash=await this.rem(trashId);
+    if((await this.title(trash))!=='trash' || await trash.getParentRem()) throw new Error('root_trash_required');
+    // A removed old output stays removed; never recreate it just to put it in Trash.
+    if(!(await this.plugin.rem.findOne(state.root_id))) return {status:'verified',root_id:state.root_id,
+      outcome:'already_absent',changed:false,preserved_separator_ids:Object.values(state.separators??{}).map(n=>n.id)};
+    let preserveSeparators=false;
+    try {
+      await this.checkSeparators(state,[state.current_parent??JSON.parse(state.signature).parentId,trashId]);
+    } catch(error) {
+      if(!['owned_separator_edited','owned_separator_moved','rem_missing'].includes((error as Error).message)) throw error;
+      // User additions to old blanks stay exactly where they are. Body validation still applies.
+      preserveSeparators=true;
+    }
+    return this.relocate(effect,operation,trashId,trashId,false,preserveSeparators);
+  }
+  async relocate(effect:string,operation:string,parentId:string,trashId:string,stripMetadata=true,preserveSeparators=false) {
     if(!/^[a-zA-Z0-9:._/-]{1,180}$/.test(effect) || !/^[a-zA-Z0-9:._/-]{1,180}$/.test(operation)) throw new Error('effect_key_invalid');
     const recordKey=key(`publish:${effect}`);
     const state=await this.plugin.storage.getLocal<WriteState>(recordKey);
     if(!state?.done || !state.root_id) throw new Error('completed_owned_outline_required');
     const source=JSON.parse(state.signature) as {parentId:string;tree:Outline;metadata:string};
     const repairKey=key(`relocate:${operation}`);
-    const signature=JSON.stringify({effect,parentId,trashId,stripMetadata});
+    const signature=JSON.stringify({effect,parentId,trashId,stripMetadata,...(preserveSeparators?{preserveSeparators:true}:{})});
     const previous=await this.plugin.storage.getLocal<{signature:string;done?:boolean}>(repairKey);
     if(previous && previous.signature!==signature) throw new Error('effect_input_changed');
     await this.rem(parentId);
@@ -327,20 +349,22 @@ export class WorkflowAPI {
     };
     // Validate every body node before changing location or removing our metadata.
     await verify(root,source.tree,true);
-    await this.checkSeparators(state,[state.current_parent??source.parentId,parentId]);
+    if(!preserveSeparators) await this.checkSeparators(state,[state.current_parent??source.parentId,parentId]);
     await this.plugin.storage.setLocal(repairKey,{signature,done:false});
     if(stripMetadata && metadataRem && (await metadataRem.getParentRem())?._id===root._id) await metadataRem.setParent(trashId);
-    if(oldParent!==parentId) await root.setParent(parentId);
+    if(oldParent!==parentId) await root.setParent(parentId,preserveSeparators?(await (await this.rem(parentId)).getChildrenRem()).length:undefined);
     if((await (await this.rem(root._id)).getParentRem())?._id!==parentId) throw new Error('readback_mismatch');
     if(stripMetadata && metadataRem && (await metadataRem.getParentRem())?._id!==trashId) throw new Error('metadata_cleanup_readback_mismatch');
     readback.length=0;
     await verify(await this.rem(root._id),source.tree,true);
-    const separators=await this.surround(effect,state,parentId);
+    const separators=preserveSeparators?undefined:await this.surround(effect,state,parentId,!previous?.done);
     state.current_parent=parentId;
     if(stripMetadata) state.metadata_removed=true;
     await this.plugin.storage.setLocal(recordKey,state);
     await this.plugin.storage.setLocal(repairKey,{signature,done:true,root_id:root._id,parent_id:parentId});
-    return {status:'verified',root_id:root._id,parent_id:parentId,separators,metadata_archived_id:stripMetadata?metadataId:undefined,reused:!!previous?.done,readback};
+    return {status:'verified',root_id:root._id,parent_id:parentId,separators,
+      ...(preserveSeparators?{preserved_separator_ids:Object.values(state.separators??{}).map(n=>n.id)}:{}),
+      metadata_archived_id:stripMetadata?metadataId:undefined,reused:!!previous?.done,readback};
   }
   async publish(effect:string,parentId:string,tree:Outline,metadata:string) {
     if(!/^[a-zA-Z0-9:._/-]{1,180}$/.test(effect)) throw new Error('effect_key_invalid');
@@ -382,7 +406,7 @@ export class WorkflowAPI {
       return owned.id!;
     };
     state.root_id=await visit(root,parentId,'root',0);
-    const separators=await this.surround(effect,state,parentId);
+    const separators=await this.surround(effect,state,parentId,true);
     state.done=true;
     await this.plugin.storage.setLocal(recordKey,state);
     return {root_id:state.root_id,status:'verified',node_count:count,separators,
@@ -390,7 +414,7 @@ export class WorkflowAPI {
   }
   async dispatch(method:string,args:any) {
     switch(method) {
-      case 'status': return {connected:true,protocol:1,plugin_version:'0.1.9',kb_id:(await this.plugin.kb.getCurrentKnowledgeBaseData())._id};
+      case 'status': return {connected:true,protocol:1,plugin_version:'0.1.12',kb_id:(await this.plugin.kb.getCurrentKnowledgeBaseData())._id};
       case 'template_snapshot': return this.snapshot(args.rem_id);
       case 'targets_snapshot': return this.snapshot(args.rem_id,'targets');
       case 'search_documents': return this.search(args.queries);
@@ -400,6 +424,7 @@ export class WorkflowAPI {
       case 'inspect_daily': return this.inspectDaily(args.daily_id,args.date,args.branch_path);
       case 'resolve_meeting': return this.meeting(args.document_id,args.date);
       case 'relocate_outline': return this.relocate(args.effect_key,args.operation_id,args.parent_id,args.trash_id,args.strip_metadata??true);
+      case 'retire_outline': return this.retire(args.effect_key,args.operation_id,args.trash_id);
       case 'publish_outline': return this.publish(args.effect_key,args.parent_id,args.tree,args.metadata);
       default: throw new Error('unsupported_method');
     }

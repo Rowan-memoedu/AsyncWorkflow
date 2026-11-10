@@ -14,6 +14,7 @@ def setup(tmp_path, monkeypatch):
     store=Manifest(cfg,'2'*64)
     monkeypatch.setattr(flows.Settings,'load',staticmethod(lambda:cfg))
     monkeypatch.setattr(flows,'suspend_flow_run',lambda **kw:pytest.fail('duplicate input form'))
+    monkeypatch.setattr(flows.dispatch_policy,'decide',lambda *a:{'route':'command','reason':'fixture','evidence':'Secretary, run the public test.'})
     return cfg,store
 
 

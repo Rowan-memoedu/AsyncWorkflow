@@ -5,9 +5,11 @@ function fixture() {
   const values=new Map<string,any>(), nodes=new Map<string,any>();
   let creates=0, loseText=false, loseCreate=false, loseMove=false, dailyCalls=0;
   function reorder(ids:string[],parent:string,position:number) {
-    const siblings=[...nodes.values()].filter(n=>n.parent===parent&&!ids.includes(n._id)).sort((a,b)=>a.order-b.order);
+    const original=[...nodes.values()].filter(n=>n.parent===parent).sort((a,b)=>a.order-b.order);
+    const insertion=position-original.slice(0,position).filter(n=>ids.includes(n._id)).length;
+    const siblings=original.filter(n=>!ids.includes(n._id));
     const moved=ids.map(id=>nodes.get(id));
-    siblings.splice(position,0,...moved);
+    siblings.splice(insertion,0,...moved);
     siblings.forEach((n,i)=>{n.parent=parent;n.order=i;});
     if(loseMove){loseMove=false;throw new Error('lost_move_reply');}
   }
@@ -182,6 +184,43 @@ describe('stage correction of owned results',()=>{
   });
 });
 describe('blank siblings around whole blocks',()=>{
+  it('moves an existing same-parent triplet to the end using the original sibling index',async()=>{
+    const f=fixture();f.node('trash',['trash']);f.node('earlier',['Earlier'],'parent');
+    const a=await f.api.publish('same-parent','parent',outline,'log');
+    f.node('later-one',['Later one'],'parent');f.node('later-two',['Later two'],'parent');
+    const count=f.counts().creates;
+    f.loseMove();
+    await expect(f.api.relocate('same-parent','same-parent-end','parent','trash')).rejects.toThrow('lost_move_reply');
+    const result=await f.api.relocate('same-parent','same-parent-end','parent','trash');
+    expect(result.separators.at_end).toBe(true);
+    expect((await f.parent.getChildrenRem()).map((n:any)=>n._id)).toEqual([
+      'earlier','later-one','later-two',a.separators.before_id,a.root_id,a.separators.after_id]);
+    expect(f.counts().creates).toBe(count);
+  });
+  it('finishes a new block at the end even when another writer appended during creation',async()=>{
+    const f=fixture();f.node('earlier',['Earlier'],'parent');
+    const create=f.plugin.rem.createRem;
+    let calls=0;
+    f.plugin.rem.createRem=async()=>{
+      const rem=await create();
+      if(++calls===2)f.node('concurrent',['Another user note'],'parent');
+      return rem;
+    };
+    const result=await f.api.publish('concurrent-write','parent',outline,'log');
+    expect((await f.parent.getChildrenRem()).map((n:any)=>n._id)).toEqual([
+      'earlier','concurrent',result.separators.before_id,result.root_id,result.separators.after_id]);
+    expect(result.separators.at_end).toBe(true);
+  });
+  it('appends a migrated whole block to a populated target and leaves its position on retry',async()=>{
+    const f=fixture();f.node('trash',['trash']);const target=f.node('target',['Target']);
+    f.node('keep',['Existing target note'],'target');
+    const a=await f.api.publish('migrate-end','parent',outline,'log');
+    await f.api.relocate('migrate-end','move-end','target','trash');
+    f.node('later',['Later user note'],'target');
+    await f.api.relocate('migrate-end','move-end','target','trash');
+    expect((await target.getChildrenRem()).map((n:any)=>n._id)).toEqual([
+      'keep',a.separators.before_id,a.root_id,a.separators.after_id,'later']);
+  });
   it('keeps two independent blocks and their pairs ordered with no duplicates on retry',async()=>{
     const f=fixture();f.node('earlier',['Earlier user note'],'parent');
     const a=await f.api.publish('a','parent',outline,'log');
@@ -202,6 +241,49 @@ describe('blank siblings around whole blocks',()=>{
     f.nodes.get(a.separators.after_id).text=['My new note'];
     await expect(f.api.relocate('a','back','parent','trash')).rejects.toThrow('owned_separator_edited');
     expect(f.nodes.get(a.root_id).parent).toBe('target');
+  });
+});
+describe('retirement of obsolete owned output',()=>{
+  it('preserves edited old separators and their children while retiring the unchanged body',async()=>{
+    const f=fixture();f.node('trash',['trash']);
+    const old=await f.api.publish('old','parent',outline,'log');
+    f.nodes.get(old.separators.before_id).text=['User note in the former blank'];
+    f.node('user-child',['User child'],old.separators.after_id);
+    const count=f.counts().creates;
+    const result=await f.api.retire('old','retire-old','trash');
+    expect(result.preserved_separator_ids).toEqual([old.separators.before_id,old.separators.after_id]);
+    expect(f.nodes.get(old.root_id).parent).toBe('trash');
+    expect(f.nodes.get(old.separators.before_id).parent).toBe('parent');
+    expect(f.nodes.get(old.separators.before_id).text).toEqual(['User note in the former blank']);
+    expect(f.nodes.get('user-child').parent).toBe(old.separators.after_id);
+    expect((await f.api.retire('old','retire-old','trash')).reused).toBe(true);
+    expect(f.counts().creates).toBe(count);
+  });
+  it('does not recreate a removed old output or discard surviving annotations',async()=>{
+    const f=fixture();f.node('trash',['trash']);
+    const old=await f.api.publish('removed','parent',outline,'log');
+    f.nodes.delete(old.root_id);
+    f.nodes.get(old.separators.after_id).text=['Keep this annotation'];
+    const count=f.counts().creates;
+    expect(await f.api.retire('removed','retire-removed','trash')).toMatchObject({status:'verified',outcome:'already_absent',changed:false});
+    expect(f.counts().creates).toBe(count);
+    expect(f.nodes.get(old.separators.after_id).text).toEqual(['Keep this annotation']);
+  });
+  it('still refuses to retire a user-edited body when a separator also changed',async()=>{
+    const f=fixture();f.node('trash',['trash']);
+    const old=await f.api.publish('changed','parent',outline,'log');
+    f.nodes.get(old.separators.before_id).text=['User note'];
+    f.nodes.get(old.root_id).text=['User changed body'];
+    await expect(f.api.retire('changed','retire-changed','trash')).rejects.toThrow('owned_rem_edited');
+    expect(f.nodes.get(old.root_id).parent).toBe('parent');
+  });
+  it('moves an untouched block together with its original pair',async()=>{
+    const f=fixture();f.node('trash',['trash']);
+    const old=await f.api.publish('untouched','parent',outline,'log');
+    const result=await f.api.retire('untouched','retire-untouched','trash');
+    expect(result.separators?.before_id).toBe(old.separators.before_id);
+    expect(result.separators?.at_end).toBe(true);
+    expect((await f.parent.getChildrenRem()).length).toBe(0);
   });
 });
 describe('template and recording day',()=>{

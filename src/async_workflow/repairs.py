@@ -24,7 +24,7 @@ def identity(cfg, recording_id, stage):
         'targets':read_json(cfg.root/'todo-targets.json',{}).get('version'),
         'format':'content-with-separators',
         'meeting': [conversation.POLICY, conversation_asr.REVISION, cfg.conversation_channel_profiles,
-                    digest(cfg.prompt.read_bytes()),cfg.deepseek_model] if stage=='meeting' else None,
+                    digest(cfg.prompt.read_bytes()),cfg.production_identity] if stage=='meeting' else None,
     }
     return digest(json.dumps(versions,sort_keys=True))[:24]
 
@@ -164,10 +164,10 @@ async def apply(cfg,store,folder,before,plan):
             if not old.get('root_id') or old['root_id'] in retained or old_part['key'] in plan['archived']: continue
             if old.get('backend')!='independent-remnote-plugin' or old.get('status')!='verified':
                 raise Attention('old_effect_requires_reconciliation')
-            result=await remnote.call(session,'relocate_outline',
+            result=await remnote.call(session,'retire_outline',
                 effect_key=old.get('plugin_effect_key',store.folder.name+'/'+old_part['key']),
                 operation_id=store.folder.name+'/'+plan['operation']+'/archive-'+old_part['key'],
-                parent_id=cfg.trash_rem_id,trash_id=cfg.trash_rem_id,strip_metadata=False)
+                trash_id=cfg.trash_rem_id)
             if result.get('status')!='verified': raise Attention('old_effect_archive_unverified')
             plan['archived'][old_part['key']]=result
             atomic(folder/'plan.json',plan)
@@ -175,10 +175,28 @@ async def apply(cfg,store,folder,before,plan):
 
 
 @flow(name='repair-recording',log_prints=False,persist_result=True)
-def repair_recording(recording_id:str,stage:str,operation_id:str):
+def repair_recording(recording_id:str,stage:str,operation_id:str,production_model:str|None=None):
     cfg=Settings.load()
+    if production_model:
+        if stage != 'archive_commands':
+            raise Attention('model_override_only_for_explicit_command_archive')
+        cfg=cfg.model_copy(update={'production_model':production_model})
     store=Manifest(cfg,recording_id)
+    from .recovery import worker_started
+    worker_started(store)
+    if flow_run.id:
+        store.update(latest_repair_run=str(flow_run.id))
     with FileLock(str(cfg.root/'locks'/('repair-'+recording_id+'.lock'))):
+        if stage == 'archive_commands':
+            from . import command_archive
+            folder,before,plan=command_archive.prepare(cfg,store,operation_id)
+            if not plan.get('completed'):
+                with FileLock(str(cfg.root/'locks/remnote-write.lock')):
+                    plan=asyncio.run(apply(cfg,store,folder,command_archive.correction_scope(before,plan),plan))
+                command_archive.complete(store,folder,plan,str(flow_run.id))
+            return {'operation':operation_id,'completed':True,'reused_asr':True,
+                    'mistaken_blocks':len(plan['decisions']),
+                    'roots':[v['root_id'] for v in plan['corrections'].values() if v.get('root_id')]}
         folder,before,plan=prepare(cfg,store,stage,operation_id)
         if plan.get('completed'): return {'operation':operation_id,'completed':True,'reused':True}
         with FileLock(str(cfg.root/'locks/remnote-write.lock')):

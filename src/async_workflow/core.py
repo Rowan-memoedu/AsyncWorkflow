@@ -85,6 +85,8 @@ class Settings(BaseModel):
     prefect_url: str = "http://127.0.0.1:4200/api"
     deepseek_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-flash"
+    production_backend: Literal['codex_exec'] = 'codex_exec'
+    production_model: str = 'gpt-6-luna'
     asr_provider: Literal["funasr", "bailian"] = "funasr"
     asr_model: str = "fun-asr-realtime"
     transcription_cli: Path = Path.home() / ".codex/skills/global-transcription/scripts/transcribe.py"
@@ -109,6 +111,10 @@ class Settings(BaseModel):
     xiaomi_url: str = "http://127.0.0.1:43140"
     stability_seconds: int = 10
     max_batch: int = 10
+
+    @property
+    def production_identity(self):
+        return 'codex_exec:local-batch-codex/v1:' + self.production_model
 
     @classmethod
     def load(cls):
@@ -138,6 +144,9 @@ def safe_source(path: Path, root: Path) -> Path:
 
 
 def recorded_time(name: str) -> datetime | None:
+    from .capture_routes import parse
+    if capture := parse(name):
+        return capture['recorded_at']
     stem = Path(name).stem
     formats = ("%Y%m%d%H%M%S", "%Y%m%d_%H%M%S", "%Y%m%d %H%M%S", "%Y-%m-%d %H-%M-%S", "%Y-%m-%d_%H-%M-%S", "%Y-%m-%d %H.%M.%S", "%Y%m%d%H%M", "%Y%m%d_%H%M", "%Y-%m-%d %H-%M", "%Y年%m月%d日 %H时%M分%S秒", "%m-%d-%Y %H.%M", "%m-%d-%Y %H.%M.%S")
     for fmt in formats:
@@ -162,9 +171,11 @@ def eligibility(name: str, duration: float, source_type: str | None = None) -> s
 
 
 def source_metadata(path: Path, cfg: Settings) -> dict:
+    from .capture_routes import metadata
+    capture = metadata(path.name, cfg)
     parts = path.relative_to(cfg.inbox).parts
     if parts[0] != "xiaomi":
-        return {"source": "local", "recorded_at": recorded_time(path.name).isoformat() if recorded_time(path.name) else None}
+        return {"source": "local", "recorded_at": recorded_time(path.name).isoformat() if recorded_time(path.name) else None, **capture}
     # Native downloader targetPath: xiaomi/type/assetId/takenEpochMillis/fileName.
     if len(parts) != 5 or not parts[2].isdigit() or not parts[3].isdigit():
         raise Attention("xiaomi_source_metadata_missing")
@@ -174,7 +185,7 @@ def source_metadata(path: Path, cfg: Settings) -> dict:
         raise Attention("xiaomi_source_time_invalid")
     names = read_json(cfg.root / 'xiaomi-recording-names.json', {}).get('names', {})
     return {"source":"xiaomi", "source_type":kind, "asset_id":parts[2], "recorded_at":taken.isoformat(),
-            "cloud_file_name": names.get(parts[2], path.name)}
+            "cloud_file_name": names.get(parts[2], path.name), **capture}
 
 
 def probe(path: Path, executable: Path) -> float:

@@ -195,6 +195,8 @@ async def publish(cfg, store, group, profile, markdown, plan, plan_path):
 
 def process(cfg, group):
     store = Manifest(cfg, group['id'])
+    from .recovery import worker_started
+    worker_started(store)
     with FileLock(str(cfg.root/'locks'/('meeting-'+group['id']+'.lock'))):
         if store.read().get('completed_revision') == group['revision']:
             return {'skipped': 'already_processed', 'group_id': group['id']}

@@ -2,23 +2,45 @@
 from __future__ import annotations
 import asyncio
 import hmac
+import json
 import secrets
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.responses import PlainTextResponse
 from pydantic import BaseModel, ConfigDict
 
 from .auth import access, protect
 from .core import Settings, atomic, read_json
 
 METHODS = {'status', 'template_snapshot', 'search_documents', 'resolve_daily', 'publish_outline',
-           'targets_snapshot', 'create_document', 'resolve_todo', 'relocate_outline',
+           'targets_snapshot', 'create_document', 'resolve_todo', 'relocate_outline', 'retire_outline',
            'command_inbox_read', 'command_inbox_archive', 'resolve_meeting', 'inspect_daily'}
-ORIGINS = {'http://localhost:43141', 'http://127.0.0.1:43141'}
+ORIGINS = {'http://localhost:43141', 'http://127.0.0.1:43141', 'http://[::1]:43141'}
+
+
+class LoopbackHostMiddleware:
+    """Validate bracketed IPv6 authorities without splitting the address at ':'."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] in ('http', 'websocket'):
+            authority = dict(scope.get('headers', [])).get(b'host', b'').decode('latin-1')
+            valid = authority.lower() in {
+                'localhost', 'localhost:43141', '127.0.0.1', '127.0.0.1:43141',
+                '[::1]', '[::1]:43141',
+            }
+            if not valid:
+                if scope['type'] == 'websocket':
+                    await send({'type':'websocket.close', 'code':1008})
+                else:
+                    await PlainTextResponse('Invalid host header', status_code=400)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
 
 
 def token_for(cfg: Settings, *, create=False):
@@ -36,10 +58,11 @@ class RPC(BaseModel):
 
 def create_app(cfg: Settings, token: str | None = None, static_dir: Path | None = None):
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=['localhost', '127.0.0.1'])
+    app.add_middleware(LoopbackHostMiddleware)
     secret = token or token_for(cfg, create=True)
     socket: WebSocket | None = None
     pending: dict[str, asyncio.Future] = {}
+    network_diagnostics: dict = {}
     kb_file = cfg.root / 'remnote-plugin-kb.json'
 
     @app.middleware('http')
@@ -50,13 +73,13 @@ def create_app(cfg: Settings, token: str | None = None, static_dir: Path | None 
         response.headers['Cache-Control'] = 'no-store'
         # Static plugin assets contain no credentials. RemNote must fetch its
         # manifest across origins; the secret and RPC routes do not allow CORS.
-        if request.url.path.startswith('/plugin/'):
+        if request.url.path.startswith('/plugin/') and request.url.path not in ('/plugin/', '/plugin/index.html'):
             response.headers['Access-Control-Allow-Origin'] = '*'
         return response
 
     @app.get('/status')
     async def status():
-        return {'connected': socket is not None, 'protocol':1}
+        return {'connected': socket is not None, 'protocol':1, 'network':network_diagnostics}
 
     @app.get('/bootstrap')
     async def bootstrap(request: Request):
@@ -94,7 +117,8 @@ def create_app(cfg: Settings, token: str | None = None, static_dir: Path | None 
     @app.websocket('/plugin-socket')
     async def plugin_socket(ws: WebSocket):
         nonlocal socket
-        if ws.headers.get('origin') not in ORIGINS:
+        network_diagnostics['socket_origin']=ws.headers.get('origin')
+        if ws.headers.get('origin') not in (*ORIGINS, 'null', 'app://js'):
             await ws.close(code=1008)
             return
         await ws.accept()
@@ -124,13 +148,31 @@ def create_app(cfg: Settings, token: str | None = None, static_dir: Path | None 
                     if not future.done(): future.set_exception(ConnectionError('plugin_disconnected'))
 
     folder=static_dir or Path('D:/Artifacts/AsyncWorkflow/remnote-plugin')
+    @app.get('/plugin/')
+    @app.get('/plugin/index.html')
+    async def plugin_html(request: Request):
+        if not (folder/'index.html').is_file():
+            raise HTTPException(404, 'plugin_not_built')
+        text=(folder/'index.html').read_text('utf-8')
+        framed=(request.headers.get('sec-fetch-dest')=='iframe'
+                and request.headers.get('sec-fetch-mode')=='navigate')
+        if framed:
+            value=json.dumps(secret).replace('<', '\\u003c')
+            seed='<script>globalThis.__ASYNC_BRIDGE_TOKEN='+value+';</script>'
+            position=text.find('<script')
+            text=text[:position]+seed+text[position:] if position>=0 else text+seed
+        network_diagnostics['html_credential_seeded']=framed
+        return HTMLResponse(text,headers={
+            'Content-Security-Policy':'frame-ancestors app://js https://www.remnote.com https://remnote.com',
+            'Cache-Control':'no-store',
+        })
     if folder.is_dir(): app.mount('/plugin', StaticFiles(directory=folder, html=True), name='plugin')
     return app
 
 
 def serve():
     import uvicorn
-    uvicorn.run(create_app(Settings.load()), host='127.0.0.1', port=43141, access_log=False, ws_max_size=1024*1024)
+    uvicorn.run(create_app(Settings.load()), host='localhost', port=43141, access_log=False, ws_max_size=1024*1024)
 
 
 if __name__ == '__main__':

@@ -7,18 +7,18 @@ from async_workflow.core import Attention,Manifest,Settings,UnknownOutcome
 
 
 def test_feedback_removal_preserves_interleaved_notes_and_offsets():
-    text='今天散步。以后运动都进训练册。午饭很香。'
+    text='今天散步。秘书，更新录音路由，以后运动都进训练册。午饭很香。'
     parsed=feedback.FeedbackPartition(spans=[{'unit':1}],request='以后运动都进训练册。',reason='future rule')
     result=feedback.partition(parsed,text)
-    assert result['raw_text']=='以后运动都进训练册。'
+    assert result['raw_text']=='秘书，更新录音路由，以后运动都进训练册。'
     assert len(result['remaining_text'])==len(text)
     assert result['remaining_text'][:5]=='今天散步。'
-    assert result['remaining_text'][15:]=='午饭很香。'
+    assert result['remaining_text'].endswith('午饭很香。')
     assert ''.join(text[a:b] for a,b in result['source_spans'])==result['raw_text']
 
 
 def test_context_is_not_removed_from_normal_content():
-    text='新建训练册。以后都放这本。'
+    text='新建训练册。秘书，更新录音归档，以后都放这本。'
     value=feedback.FeedbackPartition(spans=[{'unit':1}],context_spans=[{'unit':0}],request='以后放训练册。',reason='reference')
     result=feedback.partition(value,text)
     assert result['remaining_text'].startswith('新建训练册。')
@@ -66,6 +66,9 @@ def setup(tmp_path,monkeypatch):
             else: pytest.fail('Unexpected native mutation: '+method)
             return SimpleNamespace(model_dump=lambda:result)
     monkeypatch.setattr(delivery,'CodexClient',Client)
+    # These tests exercise native delivery; policy classification has separate tests.
+    from async_workflow import dispatch_policy
+    monkeypatch.setattr(dispatch_policy,'decide',lambda *a:{'route':'workflow','reason':'fixture','evidence':'Secretary, update recording workflow.'})
     return cfg,store,Client
 
 
@@ -126,7 +129,7 @@ def test_feedback_only_repair_never_reprocesses_asr_or_notes(setup,monkeypatch):
     monkeypatch.setattr(flows.Settings,'load',staticmethod(lambda:cfg))
     monkeypatch.setattr(asr,'recognize',lambda *a:pytest.fail('ASR must not run'))
     monkeypatch.setattr(remnote,'publish',lambda *a,**k:pytest.fail('Notes must not be written'))
-    monkeypatch.setattr(feedback,'prepare',lambda *a:{'source_spans':[[0,5]],'key':'feedback-one','cancelled':False})
+    monkeypatch.setattr(feedback,'prepare',lambda *a:{'source_spans':[[0,5]],'key':'feedback-one','cancelled':False,'raw_text':'Secretary, update recording workflow.'})
     monkeypatch.setattr(feedback,'message',lambda *a:'Only feedback body')
     result=flows.process_workflow_feedback.fn(store.folder.name)
     assert result['status']=='queued'
@@ -141,7 +144,7 @@ def test_new_document_must_verify_before_feedback_is_sent(setup,monkeypatch):
     atomic(store.folder/'asr.json',{'text':'A workflow request.'})
     store.update(segments=[{'key':'new-document','document_action':'create','source_spans':[[0,5]]}])
     monkeypatch.setattr(flows.Settings,'load',staticmethod(lambda:cfg))
-    monkeypatch.setattr(feedback,'prepare',lambda *a:{'source_spans':[[10,15]],'context_spans':[[0,5]],'key':'feedback-one','cancelled':False})
+    monkeypatch.setattr(feedback,'prepare',lambda *a:{'source_spans':[[10,15]],'context_spans':[[0,5]],'key':'feedback-one','cancelled':False,'raw_text':'Secretary, update recording workflow.'})
     monkeypatch.setattr(feedback,'message',lambda *a:pytest.fail('Cannot ground a not-yet-created document'))
     pauses=[]
     monkeypatch.setattr(flows,'suspend_flow_run',lambda **kw:pauses.append(kw))
@@ -179,7 +182,7 @@ def test_new_analysis_routes_feedback_separately_from_ordinary_notes(setup,monke
     cfg,store,_=setup
     source=cfg.inbox/'10-07-2026 12.00.mp3'
     source.write_bytes(b'fixture recording')
-    text=notes+'以后转写保留英文术语。'
+    text=notes+'秘书，更新录音工作流，以后转写保留英文术语。'
     extracted=feedback.partition(feedback.FeedbackPartition(
         spans=[{'unit':1 if notes else 0}],request='以后转写保留英文术语。',reason='format'),text)
     extracted.update(extractor_revision=digest(feedback.RULES),source_hash=digest(text))

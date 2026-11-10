@@ -23,9 +23,8 @@ def continue_runs(data):
     from uuid import UUID
     from prefect.client.orchestration import get_client
     from prefect.states import Scheduled
-    ids = ([data['analysis_run']] if data.get('analysis_run') else []) + list(data.get('segment_runs', {}).values())
-    if data.get('workflow_feedback_run'):
-        ids.append(data['workflow_feedback_run'])
+    from .recovery import run_ids
+    ids = run_ids(data)
     retried = []
     with get_client(sync_client=True) as client:
         for run_id in dict.fromkeys(ids):
@@ -161,17 +160,16 @@ def watch(cfg: Settings):
         atomic(current.root/'watcher-status.json', {'checked_at':now(),'enabled':True,
                'enabled_at':current.enabled_at,'attempted':attempted,'submitted':submitted,
                'scan_interval_seconds':SCAN_INTERVAL_SECONDS})
-    try:
-        recover(cfg)
-        sweep()
-    except Exception as exc:
-        atomic(cfg.root / "last-ingest-error.json", {"time":now(), "error_type":type(exc).__name__})
+    def cycle():
+        # A recovery service outage must not prevent ingestion, or vice versa.
+        for operation in (lambda: recover(Settings.load()), sweep):
+            try:
+                operation()
+            except Exception as exc:
+                atomic(cfg.root / "last-ingest-error.json", {"time": now(), "error_type": type(exc).__name__})
+    cycle()
     for _ in scan_ticks():
-        try:
-            recover(cfg)
-            sweep()
-        except Exception as exc:
-            atomic(cfg.root / "last-ingest-error.json", {"time": now(), "error_type": type(exc).__name__})
+        cycle()
 
 
 def recover(cfg):
@@ -182,40 +180,63 @@ def recover(cfg):
     from prefect.flow_runs import resume_flow_run
     import asyncio
     from . import remnote
-    from . import asr
+    from .recovery import run_ids, local_workers, orphaned, unresolved_completed
     remnote_ready = None
+    report = {'checked_at': now(), 'interval_seconds': SCAN_INTERVAL_SECONDS, 'retried': [], 'resumed': [], 'errors': []}
+    processes = None
+    seen = set()
     with get_client(sync_client=True) as client:
         for file in cfg.artifacts.glob("*/manifest.json"):
-            data = read_json(file)
-            ids = ([data["analysis_run"]] if data.get("analysis_run") else []) + list(data.get("segment_runs", {}).values())
-            if data.get('workflow_feedback_run'):
-                ids.append(data['workflow_feedback_run'])
-            for run_id in ids:
-                run = client.read_flow_run(UUID(run_id))
-                if run.state is None:
+            try:
+                data = read_json(file)
+            except (OSError, ValueError):
+                report['errors'].append({'recording_id': file.parent.name, 'error': 'manifest_unreadable'})
+                continue
+            for run_id in run_ids(data):
+                if run_id in seen:
                     continue
-                message = run.state.message or ''
-                # Retry known transient failures in the SAME flow. Actions still
-                # reconcile their existing receipts; unknown submissions wait.
-                model_connection_failure = any(name+':' in message for name in
-                    ('APIConnectionError', 'APITimeoutError', 'InternalServerError', 'RateLimitError'))
-                asr_failure = ('funasr_cli_failed_receipt_retained' in message
-                    and asr.retryable_cli_failure(Manifest(cfg, file.parent.name)) is not None
-                    and data.get('asr', {}).get('attempt', 1) < 3)
-                if run.run_count < 3 and (run.state.is_crashed() or
-                        (run.state.is_failed() and (model_connection_failure or asr_failure))):
-                    # Every external action reconciles its manifest before doing any work.
-                    client.set_flow_run_state(run.id, Scheduled(name="AwaitingRetry"), force=True)
-                if run.state.is_paused() and run.state.state_details.pause_key == "dependency":
-                    segment = next((s for s in data.get("segments", []) if data.get("segment_runs", {}).get(s["key"]) == run_id), None)
-                    if segment and all(data["effects"].get(data["segments"][i]["key"], {}).get("status") == "verified" for i in segment["depends_on"]):
+                seen.add(run_id)
+                try:
+                    run = client.read_flow_run(UUID(run_id))
+                    if run.state is None:
+                        continue
+                    if run.state.is_running() or run.state.is_pending():
+                        if processes is None:
+                            processes = local_workers()
+                    if (run.state.is_failed() or run.state.is_crashed()
+                            or orphaned(run, data, processes or (set(), False))
+                            or unresolved_completed(run, data)):
+                        result = client.set_flow_run_state(run.id, Scheduled(name="AwaitingRetry"), force=True)
+                        if result is not None and result.status.value != 'ACCEPT':
+                            raise Attention('native_retry_not_accepted')
+                        report['retried'].append(run_id)
+                    if not run.state.is_paused():
+                        continue
+                    pause = run.state.state_details.pause_key or ''
+                    ready = False
+                    if pause == 'native-thread':
+                        from .dispatch_policy import addressed, has_submission
+                        segment = next((s for s in data.get('segments', []) if data.get('segment_runs', {}).get(s['key']) == run_id), None)
+                        if segment and not addressed(segment.get('raw_text', '')) and not has_submission(data.get('effects', {}).get(segment['key'])):
+                            # Re-evaluate a legacy false command; never manufacture a human answer.
+                            client.set_flow_run_state(run.id, Scheduled(name='AwaitingRetry'), force=True)
+                            report['retried'].append(run_id)
+                    if pause == 'dependency':
+                        segment = next((s for s in data.get('segments', []) if data.get('segment_runs', {}).get(s['key']) == run_id), None)
+                        ready = bool(segment and all(data.get('effects', {}).get(data['segments'][i]['key'], {}).get('status') == 'verified' for i in segment['depends_on']))
+                    elif pause == 'feedback-document-dependency':
+                        from .feedback import pending_documents
+                        ready = not pending_documents(data)
+                    elif pause.startswith('remnote-connection:'):
+                        if remnote_ready is None:
+                            remnote_ready = asyncio.run(remnote.is_ready(cfg))
+                        ready = remnote_ready
+                    # Human input stays pending. It is never answered automatically.
+                    if ready:
                         resume_flow_run(run.id)
-                if run.state.is_paused() and run.state.state_details.pause_key == 'feedback-document-dependency':
-                    from .feedback import pending_documents
-                    if not pending_documents(data):
-                        resume_flow_run(run.id)
-                if run.state.is_paused() and (run.state.state_details.pause_key or '').startswith('remnote-connection:'):
-                    if remnote_ready is None:
-                        remnote_ready=asyncio.run(remnote.is_ready(cfg))
-                    if remnote_ready:
-                        resume_flow_run(run.id)
+                        report['resumed'].append(run_id)
+                except Exception as exc:
+                    report['errors'].append({'run_id': run_id, 'error': type(exc).__name__})
+    report['checked_runs'] = len(seen)
+    atomic(cfg.root / 'recovery-status.json', report)
+    return report
