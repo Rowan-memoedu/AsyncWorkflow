@@ -1,7 +1,7 @@
-param([ValidateSet('server','runner','watcher','xiaomi','remnote','dashboard','mirror')][string[]]$Roles=@('runner','watcher'))
+param([ValidateSet('server','runner','watcher','xiaomi','remnote','dashboard','mirror','dictation')][string[]]$Roles=@('runner','watcher'))
 $ErrorActionPreference='Stop'
 $serviceScript=Join-Path $PSScriptRoot 'run-service.ps1'
-if(@($Roles | Where-Object {$_ -notin @('dashboard','mirror')}).Count) {
+if(@($Roles | Where-Object {$_ -notin @('dashboard','mirror','dictation')}).Count) {
   $runs=Invoke-RestMethod 'http://127.0.0.1:4200/api/flow_runs/filter' -Method Post -ContentType 'application/json' -Body '{"flow_runs":{"state":{"type":{"any_":["RUNNING","PENDING"]}}},"limit":100}' -TimeoutSec 15
   if(@($runs).Count){throw 'Active flows exist; retry the service reload after they finish'}
 }

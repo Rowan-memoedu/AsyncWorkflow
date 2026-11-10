@@ -69,6 +69,17 @@ def credential(cfg):
     return value
 
 
+def content_rules():
+    """A stable boundary lets other input formats share the exact content policy.
+
+The complete common prompt remains valid for already-running recording workers.
+"""
+    content, marker, _ = prompt('refine-common.md').partition('\n## 输出格式\n')
+    if not marker or not content.strip():
+        raise Attention('refinement_format_boundary_missing')
+    return content.strip()
+
+
 def request(cfg, endpoint, payload):
     from openai import OpenAI, OpenAIError
     try:

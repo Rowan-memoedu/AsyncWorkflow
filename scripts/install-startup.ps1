@@ -1,4 +1,4 @@
-param([switch]$Start,[ValidateSet('server','runner','watcher','xiaomi','remnote','dashboard','mirror')][string[]]$Roles=@('server','runner','watcher','xiaomi','remnote','dashboard'))
+param([switch]$Start,[ValidateSet('server','runner','watcher','xiaomi','remnote','dashboard','mirror','dictation')][string[]]$Roles=@('server','runner','watcher','xiaomi','remnote','dashboard'))
 $ErrorActionPreference='Stop'
 $projectRoot='D:\Projects\AsyncWorkflow'
 $runtimeRoot='D:\AppData\AsyncWorkflow'

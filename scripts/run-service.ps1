@@ -1,4 +1,4 @@
-param([ValidateSet('server','runner','watcher','xiaomi','remnote','dashboard','mirror')][string]$Role)
+param([ValidateSet('server','runner','watcher','xiaomi','remnote','dashboard','mirror','dictation')][string]$Role)
 $ErrorActionPreference='Stop'
 $projectRoot='D:\Projects\AsyncWorkflow'
 $runtimeRoot='D:\AppData\AsyncWorkflow'
@@ -24,6 +24,7 @@ if($Role -in @('runner','watcher')) {
 }
 Start-Transcript -Path "$runtimeRoot\logs\$Role.task.log" -Append | Out-Null
 switch($Role) {
+  dictation { & $python -m async_workflow.dictation_gateway 2>&1 | Out-File -FilePath "$runtimeRoot\logs\dictation.output.log" -Append -Encoding utf8 }
   # Capture native output that Start-Transcript alone does not retain reliably.
   server { & "$projectRoot\.venv\Scripts\prefect.exe" server start --host 127.0.0.1 --port 4200 2>&1 | Out-File -FilePath "$runtimeRoot\logs\server.output.log" -Append -Encoding utf8 }
   runner { & $python -m async_workflow.cli serve 2>&1 | Out-File -FilePath "$runtimeRoot\logs\runner.output.log" -Append -Encoding utf8 }
