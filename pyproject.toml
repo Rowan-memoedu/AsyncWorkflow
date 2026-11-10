@@ -20,7 +20,7 @@ async-workflow = "async_workflow.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-async_workflow = ["web/*"]
+async_workflow = ["web/*", "prompts/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

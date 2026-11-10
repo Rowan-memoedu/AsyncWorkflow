@@ -14,6 +14,16 @@ async def doctor(cfg):
     import httpx
     credentials = access(cfg.credential_file)
     result = {"enabled": cfg.enabled, "ffprobe": cfg.ffprobe.exists(), "codex": resolve_codex_path(cfg.codex).exists(), "credential_available": {k: bool(credentials.get(k)) for k in ("DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "ALIBABA_CLOUD_ACCESS_KEY_ID", "ALIBABA_CLOUD_ACCESS_KEY_SECRET")}}
+    result['refinement'] = {'policy': cfg.refinement_policy}
+    if cfg.refinement_policy == 'content_routed':
+        from . import refinement
+        try:
+            configured = bool(refinement.credential(cfg))
+        except Attention:
+            configured = False
+        result['refinement'].update(decision_model=refinement.DECISION_MODEL,
+            generation_model=cfg.refinement_model, provider='openai_api',
+            credential_available=configured, identity=refinement.identity(cfg))
     try:
         async with connection(cfg) as session:
             result["remnote"] = await call(session, "status")

@@ -81,13 +81,15 @@ def analyze_recording(path: str, canary: bool = False):
             feedback_plan = feedback.prepare(cfg, manifest, text)
             text = feedback_plan['remaining_text']
         refine = lambda body: recording_types.cached_outline(cfg, manifest, body,
-            lambda value: outline_task(value, cfg.production_identity, splitter.PROMPT_HASH, splitter.REFINE_REVISION))
+            lambda value: outline_task(value, cfg.production_identity, splitter.refinement_identity(cfg), splitter.REFINE_REVISION))
         if recording_kind != 'conversation':
             outline = refine(text) if text.strip() else ''
         atomic(manifest.folder / "outline.md", outline, text=True)
         parts = ([recording_types.conversation_part(recording_id, text, outline)] if recording_kind == 'conversation'
                  else split_task(text, outline, cfg.production_identity, digest(splitter.SYSTEM)) if text.strip() else [])
-        version = {"audio": recording_id, "asr":read_json(manifest.folder/'asr.json',{}).get('model',cfg.asr_model), "model":cfg.production_model, "prompt":splitter.PROMPT_HASH, "refine_adapter":splitter.REFINE_REVISION, "splitter":digest(splitter.SYSTEM), "feedback":feedback_plan['extractor_revision'], "schema":1}
+        refinement_policy = 'legacy' if recording_kind == 'conversation' else cfg.refinement_policy
+        prompt_identity = splitter.PROMPT_HASH if recording_kind == 'conversation' else splitter.refinement_identity(cfg)
+        version = {"audio": recording_id, "asr":read_json(manifest.folder/'asr.json',{}).get('model',cfg.asr_model), "model":cfg.production_model, "prompt":prompt_identity, "refine_adapter":splitter.REFINE_REVISION, "refinement_policy":refinement_policy, "refinement_model":cfg.refinement_model if refinement_policy == 'content_routed' else cfg.production_model, "splitter":digest(splitter.SYSTEM), "feedback":feedback_plan['extractor_revision'], "schema":1}
         version_id = digest(json.dumps(version, sort_keys=True))
         for item in parts:
             item.setdefault("key", digest(recording_id + ":" + data.get('source_revision','') + str(item["source_spans"]))[:24])
@@ -97,7 +99,7 @@ def analyze_recording(path: str, canary: bool = False):
             atomic(manifest.folder / (item["key"] + ".md"), item["markdown"], text=True)
             atomic(manifest.folder / (item["key"] + ".json"), {"recording":{"id":recording_id, "audio":str(source), "duration":duration, **provenance}, "analysis_version":version_id, "segment":{k:v for k,v in item.items() if k != "markdown"}})
         atomic(manifest.folder / "analysis-version.json", version)
-        manifest.update(segments=parts, prompt_hash=splitter.PROMPT_HASH, model=cfg.production_model, analysis_version=version_id)
+        manifest.update(segments=parts, prompt_hash=prompt_identity, model=cfg.production_model, analysis_version=version_id)
     if file_hash(source) != recording_id:
         raise Attention("source_changed_during_analysis")
     runs = manifest.read().get("segment_runs", {})
