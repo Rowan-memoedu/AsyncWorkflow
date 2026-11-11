@@ -1,11 +1,11 @@
 # 写作与非写作的正文整理
 
-普通单人录音在整理正文前，由 `gpt-6-luna` 的 Decisions API 判断内容用途，再由 Responses API 按对应提示词整理。写作沿用 `gpt-6-luna`、低推理；已确认的非写作配置为 `gpt-6.1-sol`、中等推理。语义拆分、去处判断、执行授权和多人会议整理保持原路径。
+普通单人录音在整理正文前，由 `gpt-6-luna` 的 Decisions API 判断内容用途，再由 Responses API 按对应提示词整理。写作与非写作正文均使用已确认的 `gpt-6.1-sol`、中等推理。语义拆分、去处判断、执行授权和多人会议整理保持原路径。
 
 | 内容 | 整理方式 |
 | --- | --- |
 | 任务、需求、步骤、约束、清单、日程、事实条目 | 沿用层级结构化，保留全部要求及限定 |
-| 观点展开、思考、叙述、口述文章、消息或发言正文 | 保留自然句式、副词、语气、比喻、个人用语和展开过程 |
+| 观点展开、思考、叙述、口述文章、消息或发言正文 | 允许自然改写为完整正文，保留有效信息、立场、整体语气与风格，细化节点并统筹全文 |
 | 实质写作与命令混合 | 整份先按写作保护，既有语义拆分随后分别处理 |
 | 不确定，或非写作判断 confidence 小于 0.75 | 按写作保护；这是保守策略，不是准确率声明 |
 
@@ -13,12 +13,12 @@
 
 任务参数中的字段值、标题、术语、代码、操作例句或反例引用，不因要求原样保留就变成写作；按任务目的选非写作，引用由强结构化规则保护。已经口述的拟发消息或其他表达性正文，即使简短或加引号也仍是写作。
 
-非写作正文使用已验证的通用强结构化规则，主动清理口语、合并重复、重组层级；明确保留有效限定、引文、阶段、指代和交付要求。写作正文使用独立的保真提示词，保留原有句式、语气和表达。直接向助手提交改进反馈属于非写作。两条路线都输出 H1 标题和嵌套 bullet。
+非写作正文使用已验证的通用强结构化规则，主动清理口语、合并重复、重组层级；明确保留有效限定、引文、阶段、指代和交付要求。写作正文采用独立内容规则：先通读全文、清理重复、确定细致层级，再逐节点成稿和校订。允许补明已有指代、调整语序及组织纲领性总述；保留有效信息、立场力度与整体口吻。列举、观点与说明细拆，完整转折判断和短叙事按自然节奏组织。直接向助手提交改进反馈属于非写作。两条路线都输出 H1 标题和嵌套 bullet。
 
 ## 提示词
 
 - [决策](../src/async_workflow/prompts/decide-writing.md)
-- [写作保真与格式规则](../src/async_workflow/prompts/refine-common.md)
+- [后台输出格式及旧内容规则](../src/async_workflow/prompts/refine-common.md)：新写作分支只取“输出格式”部分
 - [非写作整理](../src/async_workflow/prompts/refine-non-writing.md)
 - [写作整理](../src/async_workflow/prompts/refine-writing.md)
 
@@ -26,7 +26,7 @@
 
 ## 启用、记录与恢复
 
-仓库外的现有配置设置 `refinement_policy: "content_routed"`；`refinement_model`、`refinement_reasoning` 保留写作及未覆盖路线的默认值。`refinement_non_writing_model`、`refinement_non_writing_reasoning` 仅覆盖最终选定的非写作路线；未配置时继承默认值。建议分别设置为 `gpt-6.1-sol` 和 `medium`，不修改写作的 `gpt-6-luna` / `low`。低置信非写作判断回到写作保护时，也使用写作模型。`doctor` 的 `generation_profiles` 显示两条路线的实际设置。
+仓库外的现有配置设置 `refinement_policy: "content_routed"`；`refinement_model`、`refinement_reasoning` 保留写作及未覆盖路线的默认值。`refinement_non_writing_model`、`refinement_non_writing_reasoning` 仅覆盖最终选定的非写作路线；未配置时继承默认值。当前确认配置中，默认 `refinement_model` / `refinement_reasoning` 与非写作覆盖项均设置为 `gpt-6.1-sol` / `medium`；Decisions 仍使用 Luna。低置信非写作判断回到写作保护时，也使用写作模型。`doctor` 的 `generation_profiles` 显示两条路线的实际设置。
 
 初始默认 `legacy` 便于受控启用；凭据文件仍通过 `openai_env_file` 指定。密钥依次读取进程 `OPENAI_API_KEY`、`OPENAI_ENV_FILE` 指向的文件或配置中的共享文件；不写入仓库、不打印、不修改环境。
 
@@ -42,6 +42,6 @@
 
 离线回归：`python -m pytest -q`。
 
-真实 API 隔离验证：`python scripts/refinement_canary.py --output <新的 D 盘产物目录> --split development`，随后对未参与修订的独立样本运行 `--split holdout`。素材全部是公开合成文本，不上传私人录音，不调用 ASR、归档或执行器。验证内容包括路线、原始自然表达和程度词的保留、口癖删除、机械重复合并、格式及错误处理。小样本结果只证明这些样本，不代表所有真实录音的准确率。
+真实 API 隔离验证：`python scripts/refinement_canary.py --output <新的 D 盘产物目录> --split development`，随后对未参与修订的独立样本运行 `--split holdout`。素材全部是公开合成文本，不上传私人录音，不调用 ASR、归档或执行器。验证内容包括路线、有效信息与立场力度、整体口吻、口癖和重复清理、细致层级、全文纠错、格式及错误处理。词面完全相同不作为新写作规则的验收条件。小样本结果只证明这些样本，不代表所有真实录音的准确率。
 
 官方资料：[Decisions](https://developers.openai.com/api/docs/guides/decisions)、[接口定义](https://developers.openai.com/api/reference/resources/decisions/methods/create)。

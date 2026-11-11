@@ -1,10 +1,10 @@
 # 闪电说短按的 Luna 写作路由
 
-适配层复用 `refinement.py` 的决策规则、验证器和凭据读取。写作分支使用保真规则，非写作分支使用独立的深度整理规则，提炼中心意思、清理口语并重组层级。直接向助手提出任务或反馈属于非写作。正文经 Responses API 生成，使用纯 bullet、两空格嵌套与 LaTeX，程序追加唯一的末尾 `- `。
+适配层复用 `refinement.py` 的决策规则、验证器和凭据读取。写作分支使用允许自然改写、细致分层与全文校订的成稿规则，非写作分支使用独立的深度整理规则，提炼中心意思、清理口语并重组层级。直接向助手提出任务或反馈属于非写作。正文经 Responses API 生成，使用纯 bullet、两空格嵌套与 LaTeX，程序追加唯一的末尾 `- `。
 
-后台录音使用 H1 加 bullet 的格式。闪电说写作分支读取保真提示词的内容规则，再附加纯 bullet 格式。闪电说非写作分支使用 `refine-dictation-non-writing.md`，与后台录音、批量录音和视频强结构化共享已验证的内容规则，各自保留原有输出格式。其他强结构化入口不增加写作判断。
+后台录音使用 H1 加 bullet 的格式。闪电说写作分支与后台写作共用独立内容规则，再附加纯 bullet 格式；后台写作只复用公共文件的 H1/bullet 格式，不再叠加旧的最小改写内容约束。闪电说非写作分支使用 `refine-dictation-non-writing.md`，与后台录音、批量录音和视频强结构化共享已验证的内容规则，各自保留原有输出格式。其他强结构化入口不增加写作判断。
 
-正文按最终路由选择模型：写作沿用默认 `refinement_model` / `refinement_reasoning`，非写作可通过 `refinement_non_writing_model` / `refinement_non_writing_reasoning` 单独设置为 `gpt-6.1-sol` / `medium`。决策仍使用 Luna；原始回应、实际模型、推理设置和提示词哈希写入本机收据，缓存身份覆盖两条路线的生成设置。
+正文按最终路由选择模型：写作沿用默认 `refinement_model` / `refinement_reasoning`，非写作可通过 `refinement_non_writing_model` / `refinement_non_writing_reasoning` 单独设置为 `gpt-6.1-sol` / `medium`。当前两条正文路线均使用 `gpt-6.1-sol` / `medium`，决策仍使用 Luna；原始回应、实际模型、推理设置和提示词哈希写入本机收据，缓存身份覆盖两条路线的生成设置。
 
 ## 兼容边界
 

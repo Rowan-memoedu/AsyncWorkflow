@@ -27,7 +27,7 @@ DEADLINE_SECONDS = 27
 
 def instructions(route):
     if route == 'writing':
-        rules = policy.content_rules() + '\n\n' + policy.prompt('refine-writing.md')
+        return policy.writing_instructions(dictation=True)
     else:
         rules = policy.prompt('refine-dictation-non-writing.md')
     return rules + '\n\n' + policy.prompt('refine-dictation-format.md')

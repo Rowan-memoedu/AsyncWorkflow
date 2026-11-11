@@ -118,11 +118,14 @@ def test_recording_and_dictation_share_content_without_format_conflict(monkeypat
     assert '第一行输出一个贴合内容的 Markdown 标题' in r.prompt('refine-common.md')
     assert '第一行输出一个贴合内容的 Markdown 标题' not in g.instructions('writing')
     assert r.prompt('refine-writing.md') in g.instructions('writing')
+    assert g.instructions('writing') == (r.prompt('refine-writing.md') + '\n\n'
+                                         + r.prompt('refine-dictation-format.md'))
+    assert r.content_rules() not in g.instructions('writing')
     assert g.instructions('non_writing') == (r.prompt('refine-dictation-non-writing.md') + '\n\n'
                                             + r.prompt('refine-dictation-format.md'))
     monkeypatch.setattr(r, 'prompt', lambda name: 'changed format contract')
     with pytest.raises(Exception, match='format_boundary_missing'):
-        g.instructions('writing')
+        r.writing_instructions()
 
 
 def test_failed_generation_is_not_cached_or_returned(cfg):
