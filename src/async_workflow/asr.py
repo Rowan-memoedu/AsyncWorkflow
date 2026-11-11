@@ -114,7 +114,8 @@ def normalize(value: dict) -> tuple[str, list[dict]]:
 def normalize_funasr(value: dict, recording_id: str) -> dict:
     if value.get('route') != 'funasr' or value.get('source_sha256') != recording_id:
         raise Attention('funasr_source_or_provider_mismatch')
-    if value.get('status', {}).get('model') != 'fun-asr-realtime':
+    model = value.get('status', {}).get('model')
+    if model not in ('fun-asr-realtime', 'fun-asr'):
         raise Attention('funasr_model_mismatch')
     text, sentences = value.get('text', ''), value.get('utterances', [])
     if not isinstance(text, str) or not text.strip() or not sentences:
@@ -144,9 +145,10 @@ def normalize_funasr(value: dict, recording_id: str) -> dict:
             raise Attention('funasr_overlapping_revisions_require_review')
         stable.append(sentence)
     return {'text':'\n'.join(s['text'] for s in stable), 'sentences':stable,
-            'model':'fun-asr-realtime', 'provider':'funasr', 'normalization_revision':'timed-prefix-v2',
+            'model':model, 'provider':'funasr', 'normalization_revision':'timed-prefix-v2',
             'collapsed_snapshots':len(sentences)-len(stable),
-            'source_sha256':recording_id, 'provider_status':value['status']}
+            'source_sha256':recording_id, 'provider_status':value['status'],
+            'preference_profile':value.get('preference_profile')}
 
 
 def restore_funasr_chunks(manifest: Manifest) -> bool:
@@ -262,7 +264,8 @@ def _recognize(cfg: Settings, manifest: Manifest, source: Path) -> str:
         with open(stage['stdout_log'],'ab') as stdout, open(stage['stderr_log'],'ab') as stderr:
             try:
                 process = subprocess.Popen([sys.executable, str(cfg.transcription_cli), 'transcribe', str(source),
-                                            '--provider', 'funasr', '--output-dir', str(output)],
+                                            '--provider', 'funasr', '--output-dir', str(output)] +
+                                           (['--preference-profile', str(cfg.asr_preference_profile)] if cfg.asr_preference_profile else []),
                                            stdout=stdout, stderr=stderr, env=env)
             except OSError as exc:
                 stage.update(submission='not_started',startup_error_type=type(exc).__name__)
@@ -329,6 +332,11 @@ def recognize_filetrans(cfg: Settings, manifest: Manifest, source: Path, *, mode
         raise Attention("unexpected_staging_prefix")
     with httpx.Client(timeout=120, follow_redirects=False) as http:
         if not saved and not stage.get("task_id"):
+            from .hotwords import parameters as shared_parameters
+            hotword_parameters, hotword_receipt = shared_parameters(cfg, model)
+            request_parameters = {**hotword_parameters, **(parameters or {})}
+            if hotword_receipt:
+                stage['hotwords'] = hotword_receipt
             stage.update(object_key=key, submission="not_submitted", cleaned=False, model=model)
             manifest.update(asr=stage)
             try:
@@ -340,7 +348,7 @@ def recognize_filetrans(cfg: Settings, manifest: Manifest, source: Path, *, mode
             signed = bucket.presign(oss.GetObjectRequest(bucket=cfg.oss_bucket, key=key), expires=timedelta(hours=3))
             headers = {"Authorization": "Bearer " + require(credentials, "DASHSCOPE_API_KEY"), "X-DashScope-Async": "enable"}
             try:
-                reply = http.post(BASE + "/services/audio/asr/transcription", headers=headers, json={"model": model, "input": {"file_urls": [signed.url]}, "parameters": parameters or {}})
+                reply = http.post(BASE + "/services/audio/asr/transcription", headers=headers, json={"model": model, "input": {"file_urls": [signed.url]}, "parameters": request_parameters})
             except httpx.HTTPError:
                 raise UnknownOutcome("asr_submission_unknown") from None
             if reply.status_code >= 400:
