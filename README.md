@@ -2,6 +2,8 @@
 
 协作开发、Agent 提交与合并规则见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
+闪电说短按接入方案见 [Luna 口述整理适配层](docs/shandianshuo-dictation.md)。服务复用后台内容规则，独立输出纯 bullet；原生短按和最终输入验收通过前，不启用为默认快速模型。代码不修改闪电说安装资源，客户端协议回归与回滚入口随项目维护。
+
 普通单人录音新增[写作/非写作整理路由](docs/writing-refinement.md)：`refinement_policy=content_routed` 时，由 GPT Luna 的 Decisions API 判断内容类型，再通过 OpenAI Responses API 选择不同提示词整理正文。写作保留自然句式、副词、语气和个人表达；非写作沿用层级结构化；两者都清理无信息口癖与机械重复。混合或不确定内容优先保护写作，输出仍为现有标题和层级大纲。已完成录音不重跑，会议整理、语义拆分和实际归档/执行边界保持原有路径。
 
 录音执行 Thread 已接入 WakeWire；传输边界、部署和后续开发入口见 [WakeWire 接入说明](docs/wakewire.md)。转写、正文整理、归档及维护反馈保留现有路径。

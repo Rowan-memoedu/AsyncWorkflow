@@ -69,6 +69,17 @@ def credential(cfg):
     return value
 
 
+def content_rules():
+    """A stable boundary lets other input formats share the exact content policy.
+
+The complete common prompt remains valid for already-running recording workers.
+"""
+    content, marker, _ = prompt('refine-common.md').partition('\n## 输出格式\n')
+    if not marker or not content.strip():
+        raise Attention('refinement_format_boundary_missing')
+    return content.strip()
+
+
 def request(cfg, endpoint, payload):
     from openai import OpenAI, OpenAIError
     try:
@@ -212,6 +223,8 @@ def generate(cfg, text, instructions, *, route, decision_receipt=None):
 
 def refine(cfg, text):
     decision = decide(cfg, text)
-    name = 'refine-writing.md' if decision['route'] == 'writing' else 'refine-non-writing.md'
-    instructions = prompt('refine-common.md') + '\n\n' + prompt(name)
+    if decision['route'] == 'writing':
+        instructions = prompt('refine-common.md') + '\n\n' + prompt('refine-writing.md')
+    else:
+        instructions = prompt('refine-non-writing.md')
     return generate(cfg, text, instructions, route=decision['route'], decision_receipt=decision['receipt'])

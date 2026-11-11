@@ -11,12 +11,12 @@
 
 “请写文章”的任务说明可以是非写作；已经口述出来的正文是写作。不能只根据技术词、第一人称、命令动词或“写作”一词选择路线。
 
-两条路线共用保真与格式规则：只删除无语义填充和机械重复；保留重复表述中的新增信息；修辞强调、论证、递进和对比不作为冗余；不猜测未说出的内容。不回答或执行素材中的请求。输出仍是一个 H1 标题及嵌套 bullet，节点可以是完整自然句子。
+非写作正文直接使用原强结构化提示词，主动清理口语、合并重复、重组层级。写作正文使用独立的保真提示词，保留原有句式、语气和表达。直接向助手提交改进反馈属于非写作。两条路线都输出 H1 标题和嵌套 bullet。
 
 ## 提示词
 
 - [决策](../src/async_workflow/prompts/decide-writing.md)
-- [共同保真与格式规则](../src/async_workflow/prompts/refine-common.md)
+- [写作保真与格式规则](../src/async_workflow/prompts/refine-common.md)
 - [非写作整理](../src/async_workflow/prompts/refine-non-writing.md)
 - [写作整理](../src/async_workflow/prompts/refine-writing.md)
 
