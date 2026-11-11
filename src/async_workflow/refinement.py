@@ -223,6 +223,8 @@ def generate(cfg, text, instructions, *, route, decision_receipt=None):
 
 def refine(cfg, text):
     decision = decide(cfg, text)
-    name = 'refine-writing.md' if decision['route'] == 'writing' else 'refine-non-writing.md'
-    instructions = prompt('refine-common.md') + '\n\n' + prompt(name)
+    if decision['route'] == 'writing':
+        instructions = prompt('refine-common.md') + '\n\n' + prompt('refine-writing.md')
+    else:
+        instructions = prompt('refine-non-writing.md')
     return generate(cfg, text, instructions, route=decision['route'], decision_receipt=decision['receipt'])

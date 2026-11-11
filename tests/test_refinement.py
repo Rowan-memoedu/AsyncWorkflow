@@ -88,6 +88,8 @@ def test_dispatch_uses_separate_prompt_and_original_source(cfg, monkeypatch, cho
     assert [c[0] for c in calls] == ['/decisions', '/responses']
     body = calls[1][1]
     assert r.prompt(prompt_name) in body['instructions']
+    if choice == 'non_writing':
+        assert body['instructions'] == r.prompt(prompt_name)
     assert json.loads(body['input'][0]['content']) == {'recording_transcript': original}
     assert body['store'] is False and body['truncation'] == 'disabled'
     assert 'tools' not in body

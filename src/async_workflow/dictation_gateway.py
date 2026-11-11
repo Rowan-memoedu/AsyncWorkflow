@@ -26,8 +26,11 @@ DEADLINE_SECONDS = 27
 
 
 def instructions(route):
-    branch = 'refine-writing.md' if route == 'writing' else 'refine-non-writing.md'
-    return '\n\n'.join((policy.content_rules(), policy.prompt(branch), policy.prompt('refine-dictation-format.md')))
+    if route == 'writing':
+        rules = policy.content_rules() + '\n\n' + policy.prompt('refine-writing.md')
+    else:
+        rules = policy.prompt('refine-dictation-non-writing.md')
+    return rules + '\n\n' + policy.prompt('refine-dictation-format.md')
 
 
 def identity(cfg):
