@@ -88,6 +88,18 @@ The complete common prompt remains valid for already-running recording workers.
     return content.strip()
 
 
+def writing_instructions(*, dictation=False):
+    """Share the writing policy without legacy minimal-rewrite constraints."""
+    if dictation:
+        formatting = prompt('refine-dictation-format.md')
+    else:
+        _, marker, formatting = prompt('refine-common.md').partition('\n## 输出格式\n')
+        if not marker or not formatting.strip():
+            raise Attention('refinement_format_boundary_missing')
+        formatting = '输出格式：\n' + formatting
+    return prompt('refine-writing.md') + '\n\n' + formatting
+
+
 def request(cfg, endpoint, payload):
     from openai import OpenAI, OpenAIError
     try:
@@ -234,7 +246,7 @@ def generate(cfg, text, instructions, *, route, decision_receipt=None):
 def refine(cfg, text):
     decision = decide(cfg, text)
     if decision['route'] == 'writing':
-        instructions = prompt('refine-common.md') + '\n\n' + prompt('refine-writing.md')
+        instructions = writing_instructions()
     else:
         instructions = prompt('refine-non-writing.md')
     return generate(cfg, text, instructions, route=decision['route'], decision_receipt=decision['receipt'])

@@ -90,6 +90,10 @@ def test_dispatch_uses_separate_prompt_and_original_source(cfg, monkeypatch, cho
     assert r.prompt(prompt_name) in body['instructions']
     if choice == 'non_writing':
         assert body['instructions'] == r.prompt(prompt_name)
+    else:
+        formatting = r.prompt('refine-common.md').partition('\n## 输出格式\n')[2]
+        assert body['instructions'] == r.prompt(prompt_name) + '\n\n输出格式：\n' + formatting
+        assert r.content_rules() not in body['instructions']
     assert json.loads(body['input'][0]['content']) == {'recording_transcript': original}
     assert body['store'] is False and body['truncation'] == 'disabled'
     assert 'tools' not in body
