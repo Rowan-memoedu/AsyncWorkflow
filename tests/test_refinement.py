@@ -193,3 +193,24 @@ def test_generation_wrong_model_fails_instead_of_falling_back(cfg, monkeypatch):
     monkeypatch.setattr(r, 'request', lambda *args: response())
     with pytest.raises(Attention, match='generation_model_mismatch'):
         r.generate(cfg, 'Source.', 'Instructions.', route='non_writing')
+
+
+def test_canary_models(cfg, monkeypatch, tmp_path):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('refinement_canary', Path(__file__).parents[1]/'scripts/refinement_canary.py')
+    canary = importlib.util.module_from_spec(spec); spec.loader.exec_module(canary)
+    cfg.refinement_non_writing_model='gpt-6.1-sol'
+    cfg.refinement_non_writing_reasoning='medium'
+    cfg.prompt=tmp_path/'legacy.md'; cfg.prompt.write_text('Legacy instructions.',encoding='utf-8')
+    calls=[]
+    def backend(c,path,body):
+        calls.append((path,body))
+        if path=='/decisions':return decision('non_writing')
+        value=response(); value['model']=body['model']; return value
+    monkeypatch.setattr(r,'request',backend)
+    result=canary.run_case(cfg,tmp_path,{'id':'c','text':'Synthetic task source.',
+        'split':'independent','expected_route':'non_writing','generate':True,'baseline':True})
+    generation=[body for path,body in calls if path=='/responses']
+    assert len(generation)==2
+    assert all(b['model']=='gpt-6.1-sol' and b['reasoning']=={'effort':'medium'} for b in generation)
+    assert result['generation_model']=='gpt-6.1-sol' and result['ok']

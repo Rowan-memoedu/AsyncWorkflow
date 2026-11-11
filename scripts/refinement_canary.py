@@ -24,9 +24,11 @@ def run_case(base, output, case):
         return saved
     start = time.monotonic()
     decision = r.decide(cfg, case['text'])
+    model, reasoning = r.generation_settings(cfg, decision['route'])
     result = {'id': case['id'], 'split': case['split'], 'source': case['text'],
               'expected_route': case['expected_route'], 'decision': decision,
               'route_ok': decision['route'] == case['expected_route'], 'fingerprint': fingerprint}
+    result.update(generation_model=model, generation_reasoning=reasoning)
     if case.get('generate'):
         value = splitter.refine(cfg, case['text'])
         atomic(folder/'output.md', value+'\n', text=True)
@@ -42,7 +44,7 @@ def run_case(base, output, case):
         result['content_ok'] = all(c['ok'] for c in checks)
         if case.get('baseline'):
             # Same API/model and unmodified old prompt isolate the prompt difference.
-            old = r.generate(cfg, case['text'], base.prompt.read_text(encoding='utf-8-sig'), route='legacy_comparison')
+            old = r.generate(cfg, case['text'], base.prompt.read_text(encoding='utf-8-sig'), route=decision['route'])
             atomic(folder/'baseline.md', old+'\n', text=True)
             result['baseline'] = old
     result['seconds'] = time.monotonic() - start
@@ -122,6 +124,8 @@ def main():
                'generated':sum('output' in r for r in ordered),
                'content_passed':sum(r.get('content_ok',False) for r in ordered),
                'decision_model':r.DECISION_MODEL, 'generation_model':base.refinement_model,
+               'generation_profiles':{route:dict(zip(('model','reasoning'),r.generation_settings(base,route)))
+                                      for route in ('writing','non_writing')},
                'policy_identity':r.identity(base), 'results':ordered}
     atomic(args.output/'summary.json', summary)
     write_report(summary, args.output)
