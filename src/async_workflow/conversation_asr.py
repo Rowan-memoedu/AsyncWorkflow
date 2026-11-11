@@ -9,6 +9,7 @@ import fnmatch
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 import httpx
 from .auth import access, require
@@ -58,6 +59,8 @@ def chunk_receipt(cfg, audio, folder):
     state = read_json(state_path, {})
     if state.get('submission') == 'unknown':
         raise UnknownOutcome('conversation_asr_submission_unknown_no_replay')
+    if cfg.asr_preference_profile:
+        return shared_chunk_receipt(cfg, audio, folder, audio_hash)
     key = require(access(cfg.credential_file), 'DASHSCOPE_API_KEY')
     payload = {'model':'fun-asr-realtime', 'parameters':{'format':'mp3'}, 'resources':[],
                'input':{'messages':[{'role':'user','content':[{'audio':
@@ -79,6 +82,37 @@ def chunk_receipt(cfg, audio, folder):
             raise UnknownOutcome('conversation_asr_submission_unknown_no_replay') from None
     saved = {'complete':True,'audio_sha256':audio_hash,'events':received,'finished_at':now()}
     atomic(receipt_path, saved)
+    atomic(state_path, {'submission':'completed','audio_sha256':audio_hash,'finished_at':now()})
+    return saved
+
+
+def shared_chunk_receipt(cfg, audio, folder, audio_hash):
+    """Use the same native file hotwords while retaining server word timestamps."""
+    output = folder/'shared-asr'
+    raw_path = output/'raw.json'
+    state_path = folder/'state.json'
+    if not raw_path.exists():
+        atomic(state_path, {'submission':'unknown','audio_sha256':audio_hash,'started_at':now()})
+        with (folder/'asr-cli.out.log').open('wb') as stdout, (folder/'asr-cli.err.log').open('wb') as stderr:
+            result = subprocess.run([sys.executable, str(cfg.transcription_cli), 'transcribe', str(audio),
+                '--provider','funasr','--preference-profile',str(cfg.asr_preference_profile),
+                '--output-dir',str(output)], stdout=stdout, stderr=stderr, timeout=900)
+        if result.returncode:
+            raise Attention('conversation_shared_asr_failed_receipt_retained')
+    raw = read_json(raw_path, {})
+    hotwords = raw.get('status', {}).get('hotwords', {})
+    if raw.get('source_sha256') != audio_hash or raw.get('status', {}).get('model') != 'fun-asr' or not hotwords.get('verified'):
+        raise Attention('conversation_shared_asr_receipt_mismatch')
+    transcripts = raw.get('service_response', {}).get('transcription', {}).get('transcripts', [])
+    received = []
+    for transcript in transcripts:
+        for sentence in transcript.get('sentences', []):
+            received.append({'output': {'sentence': {**sentence, 'sentence_id':len(received), 'sentence_end':True}}})
+    saved = {'complete':True,'audio_sha256':audio_hash,'events':received,'finished_at':now(),
+             'hotwords':hotwords,'raw_receipt':str(raw_path)}
+    if not words_from_receipt(saved):
+        raise Attention('conversation_shared_asr_missing_word_timestamps')
+    atomic(folder/'receipt.json', saved)
     atomic(state_path, {'submission':'completed','audio_sha256':audio_hash,'finished_at':now()})
     return saved
 

@@ -97,6 +97,7 @@ class Settings(BaseModel):
     openai_env_file: Path = Path('D:/AppData/OpenAI/.env.local')
     asr_provider: Literal["funasr", "bailian"] = "funasr"
     asr_model: str = "fun-asr-realtime"
+    asr_preference_profile: Path | None = None
     transcription_cli: Path = Path.home() / ".codex/skills/global-transcription/scripts/transcribe.py"
     oss_bucket: str = ""
     oss_endpoint: str = "https://oss-cn-beijing.aliyuncs.com"
