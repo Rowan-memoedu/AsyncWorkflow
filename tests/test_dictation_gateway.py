@@ -164,3 +164,33 @@ def test_timeout_and_client_cancel_terminate_upstream(disconnect, deadline, stat
         assert exc.value.status_code == status
     asyncio.run(run())
     assert stopped
+
+
+@pytest.mark.parametrize('route,model,reasoning', [('writing','gpt-6-luna','low'),
+                                                ('non_writing','gpt-6.1-sol','medium')])
+def test_native_route_selects_model_and_records_effective_settings(cfg, route, model, reasoning):
+    cfg.refinement_non_writing_model = 'gpt-6.1-sol'
+    cfg.refinement_non_writing_reasoning = 'medium'
+    calls = []
+    async def post(c, endpoint, payload):
+        calls.append((endpoint, payload))
+        if endpoint == '/decisions':return decision(route)
+        return {'status':'completed','model':payload['model'],'output':[{'type':'message',
+            'content':[{'type':'output_text','text':'- Synthetic source preserved.'}]}]}
+    output,evidence=asyncio.run(g.refine(cfg,'Synthetic source.',post))
+    assert calls[0][1]['model']=='gpt-6-luna'
+    assert calls[1][1]['model']==model
+    assert calls[1][1]['reasoning']=={'effort':reasoning}
+    assert evidence['generation_model']==model
+    assert evidence['generation_reasoning']==reasoning
+    assert evidence['prompt_sha256']==r.digest(g.instructions(route))
+    assert output.endswith('\n- ')
+
+
+def test_nonwriting_model_change_cannot_reuse_native_cache(cfg):
+    before=g.identity(cfg)
+    cfg.refinement_non_writing_model='gpt-6.1-sol'
+    assert g.identity(cfg)!=before
+    before=g.identity(cfg)
+    cfg.refinement_non_writing_reasoning='medium'
+    assert g.identity(cfg)!=before

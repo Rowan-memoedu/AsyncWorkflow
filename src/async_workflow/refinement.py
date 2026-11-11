@@ -43,9 +43,17 @@ def decision_identity():
                             ensure_ascii=False, sort_keys=True))
 
 
+def generation_settings(cfg, route):
+    if route == 'non_writing':
+        return (cfg.refinement_non_writing_model or cfg.refinement_model,
+                cfg.refinement_non_writing_reasoning or cfg.refinement_reasoning)
+    return cfg.refinement_model, cfg.refinement_reasoning
+
+
 def identity(cfg):
     return digest(json.dumps({'version': VERSION, 'decision': decision_identity(),
                              'model': cfg.refinement_model, 'reasoning': cfg.refinement_reasoning,
+                             'non_writing_generation': generation_settings(cfg, 'non_writing'),
                              'max_output_tokens': MAX_OUTPUT_TOKENS,
                              'prompts': {name: prompt(name) for name in
                                  ('refine-common.md', 'refine-writing.md', 'refine-non-writing.md')}},
@@ -193,21 +201,23 @@ def output_text(raw):
 
 def generate(cfg, text, instructions, *, route, decision_receipt=None):
     cfg.prepare()
+    model, reasoning = generation_settings(cfg, route)
     inputs = [{'role': 'user', 'content': json.dumps({'recording_transcript': text}, ensure_ascii=False)}]
     for attempt in range(3):
         started = time.monotonic()
-        raw = request(cfg, '/responses', {'model': cfg.refinement_model,
+        raw = request(cfg, '/responses', {'model': model,
             'instructions': instructions, 'input': inputs, 'store': False,
-            'reasoning': {'effort': cfg.refinement_reasoning},
+            'reasoning': {'effort': reasoning},
             'max_output_tokens': MAX_OUTPUT_TOKENS, 'truncation': 'disabled'})
         seconds = time.monotonic() - started
         atomic(cfg.root / 'model-attempts' / ('refine-' + digest(text + json.dumps(raw, sort_keys=True)) + '.json'),
             {'operation': 'refine', 'provider': 'openai_api', 'route': route,
              'decision_receipt': decision_receipt, 'policy_identity': identity(cfg),
+             'generation_model': model, 'generation_reasoning': reasoning,
              'source': text, 'prompt_sha256': digest(instructions), 'response': raw,
              'seconds': seconds, 'at': now()})
         usage(cfg, 'refine', raw, seconds)
-        if raw.get('model') != cfg.refinement_model:
+        if raw.get('model') != model:
             raise Attention('refinement_generation_model_mismatch')
         value = output_text(raw)
         try:

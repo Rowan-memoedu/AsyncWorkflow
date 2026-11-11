@@ -1,6 +1,6 @@
 # 写作与非写作的正文整理
 
-普通单人录音在整理正文前，由 `gpt-6-luna` 的 Decisions API 判断内容用途，再由 Responses API 按对应提示词整理。正文默认仍使用原来的 `gpt-6-luna`，可单独配置生成模型。语义拆分、去处判断、执行授权和多人会议整理保持原路径。
+普通单人录音在整理正文前，由 `gpt-6-luna` 的 Decisions API 判断内容用途，再由 Responses API 按对应提示词整理。写作沿用 `gpt-6-luna`、低推理；已确认的非写作配置为 `gpt-6.1-sol`、中等推理。语义拆分、去处判断、执行授权和多人会议整理保持原路径。
 
 | 内容 | 整理方式 |
 | --- | --- |
@@ -11,7 +11,7 @@
 
 “请写文章”的任务说明可以是非写作；已经口述出来的正文是写作。不能只根据技术词、第一人称、命令动词或“写作”一词选择路线。
 
-非写作正文直接使用原强结构化提示词，主动清理口语、合并重复、重组层级。写作正文使用独立的保真提示词，保留原有句式、语气和表达。直接向助手提交改进反馈属于非写作。两条路线都输出 H1 标题和嵌套 bullet。
+非写作正文使用已验证的通用强结构化规则，主动清理口语、合并重复、重组层级；明确保留有效限定、引文、阶段、指代和交付要求。写作正文使用独立的保真提示词，保留原有句式、语气和表达。直接向助手提交改进反馈属于非写作。两条路线都输出 H1 标题和嵌套 bullet。
 
 ## 提示词
 
@@ -24,7 +24,9 @@
 
 ## 启用、记录与恢复
 
-仓库外的现有配置设置 `refinement_policy: "content_routed"`；可配置 `refinement_model`、`refinement_reasoning`、`openai_env_file`。初始默认 `legacy` 便于受控启用，已部署机器的实际选择以 `doctor` 输出为准。密钥依次读取进程 `OPENAI_API_KEY`、`OPENAI_ENV_FILE` 指向的文件或配置中的共享文件；不写入仓库、不打印、不修改环境。
+仓库外的现有配置设置 `refinement_policy: "content_routed"`；`refinement_model`、`refinement_reasoning` 保留写作及未覆盖路线的默认值。`refinement_non_writing_model`、`refinement_non_writing_reasoning` 仅覆盖最终选定的非写作路线；未配置时继承默认值。建议分别设置为 `gpt-6.1-sol` 和 `medium`，不修改写作的 `gpt-6-luna` / `low`。低置信非写作判断回到写作保护时，也使用写作模型。`doctor` 的 `generation_profiles` 显示两条路线的实际设置。
+
+初始默认 `legacy` 便于受控启用；凭据文件仍通过 `openai_env_file` 指定。密钥依次读取进程 `OPENAI_API_KEY`、`OPENAI_ENV_FILE` 指向的文件或配置中的共享文件；不写入仓库、不打印、不修改环境。
 
 本机已确认的共享文件是 `D:/AppData/OpenAI/.env.local`。Decisions 使用官方 `/v1/decisions`；正文使用 `/v1/responses`，`store=false`、禁用输入截断。现有固定 SDK 尚无 Decisions 专用方法，因此通过其通用 POST 方法调用官方 REST 接口，不升级运行时。
 

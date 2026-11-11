@@ -19,7 +19,7 @@ from .core import Settings, Attention, atomic, digest, now, read_json
 from . import refinement as policy
 from .markdown import parse_outline
 
-VERSION = 'dictation-openai-v2'
+VERSION = 'dictation-openai-v3'
 MODEL = 'writing-router'
 PORT = 43143
 DEADLINE_SECONDS = 27
@@ -34,7 +34,9 @@ def instructions(route):
 
 
 def identity(cfg):
-    return digest(VERSION + policy.decision_identity() + cfg.refinement_model + cfg.refinement_reasoning
+    models = json.dumps({route: policy.generation_settings(cfg, route)
+                         for route in ('writing', 'non_writing')}, sort_keys=True)
+    return digest(VERSION + policy.decision_identity() + models
                   + instructions('writing') + instructions('non_writing'))
 
 
@@ -102,16 +104,19 @@ async def refine(cfg, text, post=api_post):
         'input': json.dumps({'recording_transcript': text}, ensure_ascii=False),
         'questions': [policy.decision_question()]})
     choice = policy.validate_decision(raw)
-    generated = await post(cfg, '/responses', {'model': cfg.refinement_model,
+    model, reasoning = policy.generation_settings(cfg, choice['route'])
+    generated = await post(cfg, '/responses', {'model': model,
         'instructions': instructions(choice['route']),
         'input': [{'role': 'user', 'content': json.dumps({'recording_transcript': text}, ensure_ascii=False)}],
         'store': False, 'truncation': 'disabled', 'max_output_tokens': policy.MAX_OUTPUT_TOKENS,
-        'reasoning': {'effort': cfg.refinement_reasoning}})
-    if generated.get('model') != cfg.refinement_model:
+        'reasoning': {'effort': reasoning}})
+    if generated.get('model') != model:
         raise Attention('dictation_generation_model_mismatch')
     output = compile_bullets(policy.output_text(generated))
     return output, {'decision': choice, 'decision_response': raw,
                     'generation_model': generated['model'], 'generation_usage': generated.get('usage', {}),
+                    'generation_reasoning': reasoning,
+                    'prompt_sha256': digest(instructions(choice['route'])),
                     'generation_response_id': generated.get('id')}
 
 

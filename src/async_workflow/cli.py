@@ -23,6 +23,8 @@ async def doctor(cfg):
             configured = False
         result['refinement'].update(decision_model=refinement.DECISION_MODEL,
             generation_model=cfg.refinement_model, provider='openai_api',
+            generation_profiles={route: dict(zip(('model', 'reasoning'), refinement.generation_settings(cfg, route)))
+                                 for route in ('writing', 'non_writing')},
             credential_available=configured, identity=refinement.identity(cfg))
     try:
         async with connection(cfg) as session:

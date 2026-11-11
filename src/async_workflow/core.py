@@ -91,6 +91,9 @@ class Settings(BaseModel):
     refinement_policy: Literal['legacy', 'content_routed'] = 'legacy'
     refinement_model: str = 'gpt-6-luna'
     refinement_reasoning: Literal['none', 'low', 'medium', 'high'] = 'low'
+    # Unset overrides inherit the existing writing/default generation settings.
+    refinement_non_writing_model: str | None = None
+    refinement_non_writing_reasoning: Literal['none', 'low', 'medium', 'high'] | None = None
     openai_env_file: Path = Path('D:/AppData/OpenAI/.env.local')
     asr_provider: Literal["funasr", "bailian"] = "funasr"
     asr_model: str = "fun-asr-realtime"
