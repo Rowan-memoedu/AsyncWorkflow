@@ -90,6 +90,7 @@ def analyze_recording(path: str, canary: bool = False):
         if recording_kind != 'conversation':
             outline = ''
         parts = ([recording_types.conversation_part(recording_id, text, outline)] if recording_kind == 'conversation'
+                 else splitter.selected_record(text) if provenance.get('capture_default')
                  else split_task(text, outline, cfg.production_identity, digest(splitter.SYSTEM + splitter.WHOLE_RECORDING_RULE)) if text.strip() else [])
         refinement_policy = 'legacy' if recording_kind == 'conversation' else cfg.refinement_policy
         prompt_identity = splitter.PROMPT_HASH if recording_kind == 'conversation' else splitter.refinement_identity(cfg)

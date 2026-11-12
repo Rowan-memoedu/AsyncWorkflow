@@ -111,11 +111,8 @@ def default_plan(provenance, requested, recorded_day, item=None):
     if provenance.get('capture_error'):
         from .core import Attention
         raise Attention(provenance['capture_error'])
-    # Spoken destination/create instructions keep precedence. A filename never
-    # authorizes command execution or changes the original transcript.
-    if (requested.strip() or (item or {}).get('document_action') == 'create'
-            or (item or {}).get('focus_kind')):
-        return None
+    # The user's selected directory is authoritative. Only unclassified input
+    # uses semantic routing; words in the content cannot change this choice.
     route = provenance.get('capture_default')
     if not route:
         return None
