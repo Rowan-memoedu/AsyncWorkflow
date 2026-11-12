@@ -1,5 +1,6 @@
 """Deploy the independent recording mirror through the existing verified SSH route."""
 from pathlib import Path
+import argparse
 import hashlib
 import json
 import secrets
@@ -7,7 +8,6 @@ import subprocess
 import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
-ARTIFACTS = Path('D:/Artifacts/AsyncWorkflow/recording-view-20261101')
 PRIVATE = Path('D:/AppData/RecordingView')
 URL = 'https://124.221.144.155/recordings/'
 HOST = 'ubuntu@124.221.144.155'
@@ -19,6 +19,9 @@ def run(command, **kwargs):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--output', type=Path, required=True)
+    ARTIFACTS = parser.parse_args().output.resolve()
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
     PRIVATE.mkdir(parents=True, exist_ok=True)
     credentials_path = PRIVATE/'access.json'
@@ -27,13 +30,14 @@ def main():
             'phone': secrets.token_urlsafe(32), 'publisher': secrets.token_urlsafe(32)}, indent=2), encoding='utf-8')
     access = json.loads(credentials_path.read_text(encoding='utf-8'))
     config = {'readers': {k: hashlib.sha256(access[k].encode()).hexdigest() for k in ('desktop', 'phone')},
-              'publisher_hash': hashlib.sha256(access['publisher'].encode()).hexdigest()}
+              'publisher_hash': hashlib.sha256(access['publisher'].encode()).hexdigest(),
+              'capture_readers': ['phone']}
     (PRIVATE/'server-credentials.json').write_text(json.dumps(config), encoding='utf-8')
     (PRIVATE/'phone-connection.json').write_text(json.dumps({'url': URL, 'username': 'phone', 'password': access['phone']}), encoding='utf-8')
     (Path('D:/AppData/AsyncWorkflow')/'mirror-connection.json').write_text(json.dumps(
         {'url': URL, 'publisher_token': access['publisher']}), encoding='utf-8')
     bundle = ARTIFACTS/'service.tar.gz'
-    names = ['__init__.py', 'mirror.py', 'mirror_server.py', 'web/index.html', 'web/app.js', 'web/app.css', 'web/tokens.css']
+    names = ['__init__.py', 'mirror.py', 'mirror_server.py', 'capture_protocol.py', 'web/index.html', 'web/app.js', 'web/app.css', 'web/tokens.css']
     with tarfile.open(bundle, 'w:gz') as archive:
         for name in names:
             archive.add(ROOT/'src'/'async_workflow'/name, arcname='async_workflow/'+name)

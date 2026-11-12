@@ -18,7 +18,8 @@ from .core import Settings, atomic, read_json
 
 METHODS = {'status', 'template_snapshot', 'search_documents', 'resolve_daily', 'publish_outline',
            'targets_snapshot', 'create_document', 'resolve_todo', 'relocate_outline', 'retire_outline',
-           'command_inbox_read', 'command_inbox_archive', 'resolve_meeting', 'inspect_daily'}
+           'command_inbox_read', 'command_inbox_archive', 'resolve_meeting', 'inspect_daily',
+           'capture_nodes', 'capture_catalog', 'capture_enroll'}
 ORIGINS = {'http://localhost:43141', 'http://127.0.0.1:43141', 'http://[::1]:43141'}
 
 

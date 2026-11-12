@@ -94,9 +94,9 @@ def conversation_part(recording_id, text, outline):
             'depends_on': [], 'cancelled': False}
 
 
-def cached_outline(cfg, manifest, text, refine):
+def cached_outline(cfg, manifest, text, refine, *, preset=''):
     from .splitter import refinement_identity, REFINE_REVISION
-    signature = digest(text + refinement_identity(cfg) + REFINE_REVISION + cfg.production_identity)
+    signature = digest(text + refinement_identity(cfg) + REFINE_REVISION + cfg.production_identity + preset)
     path = manifest.folder / ('outline-' + signature + '.json')
     saved = read_json(path)
     if saved:

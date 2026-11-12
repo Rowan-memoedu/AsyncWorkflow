@@ -243,8 +243,11 @@ def generate(cfg, text, instructions, *, route, decision_receipt=None):
                 '上次输出未通过格式校验。请重新从原始素材整理，严格输出一个 # 标题及 - 层级列表；保留原信息和语气。'}]
 
 
-def refine(cfg, text):
-    decision = decide(cfg, text)
+def refine(cfg, text, *, preset=''):
+    if preset not in ('', 'writing', 'non_writing'):
+        raise Attention('refinement_preset_invalid')
+    decision = ({'route': preset, 'receipt': 'remnote-tag:' + preset}
+                if preset else decide(cfg, text))
     if decision['route'] == 'writing':
         instructions = writing_instructions()
     else:

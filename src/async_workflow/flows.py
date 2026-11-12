@@ -13,6 +13,7 @@ from pydantic import Field
 
 from . import asr, executor, remnote, splitter, feedback, dispatch_policy
 from . import recording_types, conversation
+from . import capture_control, capture_styles
 from .recovery import worker_started
 from .core import Settings, Manifest, Attention, UnknownOutcome, atomic, digest, file_hash, safe_source, source_metadata, probe, eligibility, read_json
 
@@ -25,8 +26,8 @@ class Decision(RunInput):
 
 
 @task(persist_result=True, cache_policy=INPUTS + TASK_SOURCE, retries=2, retry_delay_seconds=[10, 30])
-def outline_task(text: str, model: str, prompt_hash: str, adapter_revision: str):
-    return splitter.refine(Settings.load(), text)
+def outline_task(text: str, model: str, prompt_hash: str, adapter_revision: str, preset: str = ''):
+    return splitter.refine(Settings.load(), text, preset=preset)
 
 
 @task(persist_result=True, cache_policy=INPUTS + TASK_SOURCE, retries=0)
@@ -41,6 +42,7 @@ def analyze_recording(path: str, canary: bool = False):
     source = safe_source(Path(path), cfg.inbox)
     recording_id = file_hash(source)
     manifest = Manifest(cfg, recording_id)
+    capture_control.check(cfg, recording_id)
     worker_started(manifest)
     if cfg.conversation_profiles:
         from . import meetings
@@ -58,6 +60,10 @@ def analyze_recording(path: str, canary: bool = False):
         return {'recording_id': recording_id, 'skipped': 'already_processed'}
     duration = probe(source, cfg.ffprobe)
     provenance = recording_types.recording_provenance(source.name, source_metadata(source, cfg))
+    if provenance.get('capture_error') in ('capture_route_unknown_or_ambiguous', 'capture_catalog_missing'):
+        # A phone can upload audio before an offline document request arrives.
+        # Fail retryably before analysis; do not finish it as a retained recording.
+        raise Attention(provenance['capture_error'])
     recording_kind, reason = recording_types.kind(cfg, source.name, duration, provenance)
     manifest.update(duration=duration, eligibility=reason, original_name=source.name, provenance=provenance,
                     recording_type=recording_kind, type_standard=digest(cfg.recording_types.read_bytes()))
@@ -78,27 +84,31 @@ def analyze_recording(path: str, canary: bool = False):
             if verdict != 'single_self':
                 manifest.update(eligibility='not_single_self:' + verdict)
                 return {'recording_id': recording_id, 'retained_only': 'not_single_self:' + verdict}
-            feedback_plan = feedback.prepare(cfg, manifest, text)
-            text = feedback_plan['remaining_text']
-        refine = lambda body: recording_types.cached_outline(cfg, manifest, body,
-            lambda value: outline_task(value, cfg.production_identity, splitter.refinement_identity(cfg), splitter.REFINE_REVISION))
+            feedback_plan = {'extractor_revision': 'whole-recording-no-pre-extraction'}
+        capture_control.check(cfg, recording_id)
+        # Resolve the source and its target before selecting the target's prompt layer.
         if recording_kind != 'conversation':
-            outline = refine(text) if text.strip() else ''
-        atomic(manifest.folder / "outline.md", outline, text=True)
+            outline = ''
         parts = ([recording_types.conversation_part(recording_id, text, outline)] if recording_kind == 'conversation'
-                 else split_task(text, outline, cfg.production_identity, digest(splitter.SYSTEM)) if text.strip() else [])
+                 else split_task(text, outline, cfg.production_identity, digest(splitter.SYSTEM + splitter.WHOLE_RECORDING_RULE)) if text.strip() else [])
         refinement_policy = 'legacy' if recording_kind == 'conversation' else cfg.refinement_policy
         prompt_identity = splitter.PROMPT_HASH if recording_kind == 'conversation' else splitter.refinement_identity(cfg)
-        version = {"audio": recording_id, "asr":read_json(manifest.folder/'asr.json',{}).get('model',cfg.asr_model), "model":cfg.production_model, "prompt":prompt_identity, "refine_adapter":splitter.REFINE_REVISION, "refinement_policy":refinement_policy, "refinement_model":cfg.refinement_model if refinement_policy == 'content_routed' else cfg.production_model, "splitter":digest(splitter.SYSTEM), "feedback":feedback_plan['extractor_revision'], "schema":1}
+        version = {"audio": recording_id, "asr":read_json(manifest.folder/'asr.json',{}).get('model',cfg.asr_model), "model":cfg.production_model, "prompt":prompt_identity, "refine_adapter":splitter.REFINE_REVISION, "refinement_policy":refinement_policy, "refinement_model":cfg.refinement_model if refinement_policy == 'content_routed' else cfg.production_model, "splitter":digest(splitter.SYSTEM + splitter.WHOLE_RECORDING_RULE), "feedback":feedback_plan['extractor_revision'], "schema":1}
         version_id = digest(json.dumps(version, sort_keys=True))
         for item in parts:
             item.setdefault("key", digest(recording_id + ":" + data.get('source_revision','') + str(item["source_spans"]))[:24])
             body = item.get('content_text', item['raw_text'])
-            item["markdown"] = (outline if len(parts) == 1 and body == text else
-                                refine(body) if body.strip() else '')
+            preset = (asyncio.run(capture_styles.prepare(cfg, manifest, item['key'], item))
+                      if recording_kind != 'conversation' else '')
+            capture_control.check(cfg, recording_id)
+            item["markdown"] = (outline if recording_kind == 'conversation' else
+                recording_types.cached_outline(cfg, manifest, body,
+                    lambda value: outline_task(value, cfg.production_identity, splitter.refinement_identity(cfg),
+                                               splitter.REFINE_REVISION, preset), preset=preset) if body.strip() else '')
             atomic(manifest.folder / (item["key"] + ".md"), item["markdown"], text=True)
             atomic(manifest.folder / (item["key"] + ".json"), {"recording":{"id":recording_id, "audio":str(source), "duration":duration, **provenance}, "analysis_version":version_id, "segment":{k:v for k,v in item.items() if k != "markdown"}})
         atomic(manifest.folder / "analysis-version.json", version)
+        atomic(manifest.folder / 'outline.md', '\n\n'.join(p['markdown'] for p in parts), text=True)
         manifest.update(segments=parts, prompt_hash=prompt_identity, model=cfg.production_model, analysis_version=version_id)
     if file_hash(source) != recording_id:
         raise Attention("source_changed_during_analysis")
@@ -117,6 +127,7 @@ def analyze_recording(path: str, canary: bool = False):
 def process_workflow_feedback(recording_id: str):
     cfg=Settings.load()
     store=Manifest(cfg,recording_id)
+    capture_control.check(cfg, recording_id)
     worker_started(store)
     from .command_archive import replacement
     if corrected := replacement(store.read(), store.read().get('workflow_feedback', {}).get('key')):
@@ -146,13 +157,15 @@ def process_workflow_feedback(recording_id: str):
         suspend_flow_run(key='feedback-document-dependency')
         if feedback.pending_documents(store.read(),item): raise Attention('feedback_document_dependency_not_verified')
     from .feedback_delivery import deliver
-    return deliver(cfg,store,item['key'],feedback.message(cfg,store,item))
+    with capture_control.effect_guard(cfg, recording_id):
+        return deliver(cfg,store,item['key'],feedback.message(cfg,store,item))
 
 
 @flow(name="process-segment", log_prints=False, persist_result=True)
 def process_segment(recording_id: str, index: int):
     cfg = Settings.load()
     manifest = Manifest(cfg, recording_id)
+    capture_control.check(cfg, recording_id)
     worker_started(manifest)
     data = manifest.read()
     item = dict(data["segments"][index])
@@ -178,7 +191,8 @@ def process_segment(recording_id: str, index: int):
             manifest.update(segments=updated)
     if item.get('dispatch_policy', {}).get('route') == 'workflow':
         from .feedback_delivery import deliver
-        return deliver(cfg, manifest, key, item['markdown'])
+        with capture_control.effect_guard(cfg, recording_id):
+            return deliver(cfg, manifest, key, item['markdown'])
     # Waiting in a separate child deployment leaves other independent segments runnable.
     for dependency in item["depends_on"]:
         previous = manifest.effect(data["segments"][dependency]["key"])
@@ -230,6 +244,11 @@ def process_segment(recording_id: str, index: int):
 
 
 def perform(cfg, manifest, key, item):
+    with capture_control.effect_guard(cfg, manifest.folder.name):
+        return _perform(cfg, manifest, key, item)
+
+
+def _perform(cfg, manifest, key, item):
     if item["kind"] == "command":
         return executor.execute(cfg, manifest, key, item)
     metadata = f"类型：{item['kind']}\n录音：{manifest.read()['original_name']}\n时长：{manifest.read()['duration']} 秒\n来源：{manifest.read()['sources'][0]}"

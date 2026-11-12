@@ -1,4 +1,4 @@
-"""Private HTTPS-facing read mirror; no recording or workflow execution endpoints."""
+"""Private recording view and bounded catalog/continuation requests; no audio or arbitrary execution."""
 from __future__ import annotations
 
 import base64
@@ -15,6 +15,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .mirror import IDENTITY, MAX_BYTES, listing, validate
+from .capture_protocol import Mailbox, save
 
 
 def create_app(directory, config):
@@ -23,6 +24,7 @@ def create_app(directory, config):
     lock = threading.RLock()
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     cached = None
+    mailbox = Mailbox(directory)
     if snapshot.exists():
         cached = validate(json.loads(snapshot.read_text(encoding='utf-8')))
 
@@ -36,17 +38,21 @@ def create_app(directory, config):
             if scheme.lower() != 'basic':
                 return False
             user, password = base64.b64decode(value, validate=True).decode('utf-8').split(':', 1)
-            return matches(password, config['readers'].get(user, ''))
+            return user if matches(password, config['readers'].get(user, '')) else False
         except (ValueError, UnicodeError):
             return False
 
     @app.middleware('http')
     async def private_response(request, call_next):
-        if request.url.path == '/api/sync':
+        if request.url.path == '/api/sync' or request.url.path.startswith('/api/capture/worker'):
             token = request.headers.get('authorization', '')
             accepted = token.startswith('Bearer ') and matches(token[7:], config['publisher_hash'])
         else:
             accepted = reader(request)
+            if request.url.path.startswith('/api/capture/'):
+                accepted = (accepted in config.get('capture_readers', [])
+                            and not request.headers.get('origin')
+                            and request.headers.get('x-capture-client') == '1')
         if not accepted:
             response = JSONResponse({'detail': '需要登录'}, status_code=401,
                                     headers={'WWW-Authenticate': 'Basic realm="recordings", charset="UTF-8"'})
@@ -62,6 +68,65 @@ def create_app(directory, config):
             if cached is None:
                 raise HTTPException(503, '尚未收到电脑同步的记录')
             return cached
+
+    async def bounded_body(request, maximum):
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > maximum:
+                raise HTTPException(413, 'Request too large')
+        return body
+
+    @app.get('/api/capture/worker')
+    def capture_worker():
+        return {'requests': mailbox.pending()}
+
+    @app.post('/api/capture/worker/catalog')
+    async def catalog_publish(request: Request):
+        body = await bounded_body(request, 262144)
+        try:
+            value = json.loads(body)
+            if not isinstance(value, dict) or value.get('schemaVersion') != 1 or not isinstance(value.get('routes'), list):
+                raise ValueError()
+            with lock:
+                save(directory / 'capture-catalog.json', value)
+        except (TypeError, ValueError):
+            raise HTTPException(400, 'Invalid catalog') from None
+        return {'status': 'synced'}
+
+    @app.post('/api/capture/worker/{identity}')
+    async def capture_complete(identity: str, request: Request):
+        body = await bounded_body(request, 262144)
+        try:
+            return mailbox.complete(identity, json.loads(body))
+        except ValueError:
+            raise HTTPException(409, 'Invalid result or conflicting request') from None
+
+    @app.get('/api/capture/catalog')
+    def catalog_read():
+        path = directory / 'capture-catalog.json'
+        with lock:
+            if not path.exists():
+                raise HTTPException(503, '目录尚未同步')
+            return json.loads(path.read_text(encoding='utf-8'))
+
+    @app.post('/api/capture/requests')
+    async def capture_submit(request: Request):
+        body = await bounded_body(request, 4096)
+        try:
+            return mailbox.submit(json.loads(body))
+        except ValueError:
+            raise HTTPException(409, 'Invalid or conflicting request') from None
+
+    @app.get('/api/capture/requests/{identity}')
+    def capture_get(identity: str):
+        try:
+            value = mailbox.get(identity)
+        except ValueError:
+            value = None
+        if value is None:
+            raise HTTPException(404, 'Request not found')
+        return value
 
     @app.post('/api/sync')
     async def sync(request: Request):
