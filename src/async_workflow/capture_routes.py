@@ -86,6 +86,9 @@ def _validated_metadata(name, cfg):
     if catalog.get('schemaVersion') != 1:
         raise Attention('capture_catalog_missing')
     matches = [r for r in catalog.get('routes', []) if r.get('key') == parsed['key']]
+    if not matches:
+        history = read_json(cfg.root / 'capture-route-history.json', {})
+        matches = [r for r in history.get('routes', []) if r.get('key') == parsed['key']]
     if len(matches) != 1:
         raise Attention('capture_route_unknown_or_ambiguous')
     route = deepcopy(matches[0])

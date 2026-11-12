@@ -7,8 +7,10 @@ type NodeState = {id?:string; phase:'creating'|'created'|'ready'; parent:string|
 type WriteState = {signature:string; done?:boolean; root_id?:string; nodes:Record<string,NodeState>;
   format?:'content-only'; current_parent?:string; metadata_removed?:boolean;
   separators?:Record<'before'|'after',NodeState>};
-type SnapshotNode = {id:string; title:string; children:SnapshotNode[]};
+type SnapshotNode = {id:string; title:string; children:SnapshotNode[]; is_document?:boolean};
 const key = (value:string) => `async-workflow-v1:${value}`;
+// BuiltInPowerupCodes.DailyDocument in the installed SDK; keep this API testable without browser globals.
+const DAILY_DOCUMENT_POWERUP = 'd';
 
 export class WorkflowAPI {
   constructor(private plugin:ReactRNPlugin) {}
@@ -33,7 +35,7 @@ export class WorkflowAPI {
       if(depth>12 || ++count>500) throw new Error('template_too_large');
       const children=[];
       for(const child of await rem.getChildrenRem()) children.push(await visit(child,depth+1));
-      return {id:rem._id,title:await this.title(rem),children};
+      return {id:rem._id,title:await this.title(rem),children,is_document:await rem.isDocument()};
     };
     const root=await visit(await this.rem(id),0);
     await this.plugin.storage.setLocal(key(slot),root);
@@ -62,6 +64,71 @@ export class WorkflowAPI {
       }
     }
     return {candidates:[...results.values()]};
+  }
+  async captureNodes(ids:string[]) {
+    if(!Array.isArray(ids) || ids.length>300 || ids.some(id=>typeof id!=='string' || !id)) throw new Error('capture_ids_invalid');
+    const nodes=[];
+    for(const id of [...new Set(ids)]) {
+      const rem=await this.rem(id);
+      nodes.push({id:rem._id,title:await this.title(rem),parent_id:rem.parent??null,
+        is_document:await rem.isDocument(),tags:(await rem.getTagRems()).map(tag=>tag._id)});
+    }
+    return {nodes};
+  }
+  async captureCatalog(tagIds:string[],templateId:string) {
+    if(!Array.isArray(tagIds) || tagIds.length>3 || tagIds.some(id=>typeof id!=='string')) throw new Error('capture_tags_invalid');
+    const template=await this.snapshot(templateId);
+    const dailyIds=new Set<string>();
+    const daily=(node:SnapshotNode)=>{dailyIds.add(node.id);node.children.forEach(daily);};
+    daily(template);
+    const tagged=new Map<string,PluginRem>();
+    for(const id of tagIds) for(const rem of await (await this.rem(id)).taggedRem())
+      if(!dailyIds.has(rem._id) && await rem.isDocument()) tagged.set(rem._id,rem);
+    const roots=[];
+    for(const rem of tagged.values()) {
+      let parent=await rem.getParentRem();let nested=await rem.hasPowerup(DAILY_DOCUMENT_POWERUP);let count=0;
+      while(parent) {
+        if(++count>64) throw new Error('capture_parent_cycle');
+        if(tagged.has(parent._id) || dailyIds.has(parent._id) ||
+           await parent.hasPowerup(DAILY_DOCUMENT_POWERUP) ||
+           (!parent.parent && (await this.title(parent)).trim().toLowerCase()==='trash')) {nested=true;break;}
+        parent=await parent.getParentRem();
+      }
+      if(!nested) roots.push(rem);
+    }
+    const documents:{id:string;title:string;parent_id:string|null;path:string[];tags:string[]}[]=[];
+    const visited=new Set<string>();
+    const visit=async(rem:PluginRem,parent:string|null,path:string[],depth:number)=>{
+      if(visited.has(rem._id)) return;
+      if(depth>64 || visited.size>=20000) throw new Error('capture_tree_too_large');
+      visited.add(rem._id);
+      const title=await this.title(rem);
+      const full=[...path,title];
+      let next=parent;
+      if(await rem.isDocument()) {
+        documents.push({id:rem._id,title,parent_id:parent,path:full,tags:(await rem.getTagRems()).map(n=>n._id)});
+        if(documents.length>300) throw new Error('capture_catalog_too_large');
+        next=rem._id;
+      }
+      for(const child of await rem.getChildrenRem()) await visit(child,next,full,depth+1);
+    };
+    for(const root of roots) {
+      const path:string[]=[];let parent=await root.getParentRem();let count=0;
+      while(parent) {
+        if(++count>64) throw new Error('capture_parent_cycle');
+        path.unshift(await this.title(parent));parent=await parent.getParentRem();
+      }
+      await visit(root,null,path,0);
+    }
+    return {template,documents};
+  }
+  async captureEnroll(id:string,tagId:string) {
+    const rem=await this.rem(id);
+    if(!await rem.isDocument()) throw new Error('capture_document_required');
+    await this.rem(tagId);
+    await rem.addTag(tagId);
+    if(!(await rem.getTagRems()).some(tag=>tag._id===tagId)) throw new Error('capture_tag_readback_failed');
+    return {id,tag_id:tagId};
   }
   async daily(date:string,path:string[]) {
     if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('date_invalid');
@@ -153,6 +220,9 @@ export class WorkflowAPI {
         state=await this.ensureNode(recordKey,state,parent._id,[label]);
         parent=await this.rem(state.id!);
       }
+      let templateNode=template;
+      for(const part of path.slice(0,index+1)) templateNode=templateNode.children.find(n=>n.title===part)!;
+      if(templateNode.is_document && !await parent.isDocument()) await parent.setIsDocument(true);
       await this.plugin.storage.setLocal(key(`daily:${date}:${JSON.stringify(path.slice(0,index+1))}`),
         {daily_id:daily._id,parent_id:parent._id});
     }
@@ -414,9 +484,12 @@ export class WorkflowAPI {
   }
   async dispatch(method:string,args:any) {
     switch(method) {
-      case 'status': return {connected:true,protocol:1,plugin_version:'0.1.12',kb_id:(await this.plugin.kb.getCurrentKnowledgeBaseData())._id};
+      case 'status': return {connected:true,protocol:1,plugin_version:'0.1.13',kb_id:(await this.plugin.kb.getCurrentKnowledgeBaseData())._id};
       case 'template_snapshot': return this.snapshot(args.rem_id);
       case 'targets_snapshot': return this.snapshot(args.rem_id,'targets');
+      case 'capture_nodes': return this.captureNodes(args.ids);
+      case 'capture_catalog': return this.captureCatalog(args.tag_ids,args.template_id);
+      case 'capture_enroll': return this.captureEnroll(args.rem_id,args.tag_id);
       case 'search_documents': return this.search(args.queries);
       case 'create_document': return this.createDocument(args.effect_key,args.title,args.parent_id??null);
       case 'resolve_todo': return this.todo(args.category,args.software);

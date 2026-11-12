@@ -14,7 +14,11 @@ function fixture() {
     if(loseMove){loseMove=false;throw new Error('lost_move_reply');}
   }
   function node(id:string,text:any[]=[],parent?:string) {
-    const value={_id:id,text,parent,createdAt:0,isDoc:false,order:[...nodes.values()].filter(n=>n.parent===parent).length,
+    const value={_id:id,text,parent,createdAt:0,isDoc:false,tags:[] as string[],order:[...nodes.values()].filter(n=>n.parent===parent).length,
+      hasPowerup:async(code:string)=>code==='d' && id==='daily',
+      getTagRems:async()=>value.tags.map(t=>nodes.get(t)),
+      taggedRem:async()=>[...nodes.values()].filter(n=>n.tags.includes(id)),
+      addTag:async(tag:string)=>{if(!value.tags.includes(tag))value.tags.push(tag);},
       getParentRem:async()=>nodes.get(value.parent),
       getChildrenRem:async()=>[...nodes.values()].filter(n=>n.parent===id).sort((a,b)=>a.order-b.order),
       setParent:async(p:string,position=0)=>reorder([id],p,position),
@@ -37,6 +41,39 @@ function fixture() {
     loseText:()=>{loseText=true;},loseCreate:()=>{loseCreate=true;},loseMove:()=>{loseMove=true;}};
 }
 const outline={text:'Title :: literal → $x^2$',children:[{text:'Reason',children:[{text:'Example',children:[]}]}]};
+
+describe('capture catalog',()=>{
+  it('follows rename, tag edits and newly nested documents without duplicating tagged descendants',async()=>{
+    const f=fixture();f.node('template',['Daily']);f.node('writing',['Writing']);f.node('non',['Non-writing']);
+    f.parent.isDoc=true;f.parent.tags=['writing'];
+    const child=f.node('child',['Child'],'parent');child.isDoc=true;child.tags=['non'];
+    let result=await f.api.captureCatalog(['writing','non'],'template');
+    expect(result.documents.map(d=>d.id)).toEqual(['parent','child']);
+    expect(result.documents[1].parent_id).toBe('parent');
+    f.parent.text=['Renamed'];child.tags=[];
+    f.node('heading',['Section'],'parent');f.node('deep',['New document'],'heading').isDoc=true;
+    result=await f.api.captureCatalog(['writing','non'],'template');
+    expect(result.documents[0].title).toBe('Renamed');
+    expect(result.documents.find(d=>d.id==='deep')?.parent_id).toBe('parent');
+    expect(result.documents.find(d=>d.id==='child')?.tags).toEqual([]);
+    f.parent.tags=[];
+    expect((await f.api.captureCatalog(['writing','non'],'template')).documents).toEqual([]);
+  });
+  it('marks a newly resolved daily child as Document when the template says so',async()=>{
+    const f=fixture();f.node('template',['Daily']);f.node('topic',['Topic'],'template').isDoc=true;
+    await f.api.snapshot('template');
+    const value=await f.api.daily('2026-11-12',['Topic']);
+    expect(f.nodes.get(value.parent_id).isDoc).toBe(true);
+  });
+  it('excludes copied daily tags and recoverably deleted documents',async()=>{
+    const f=fixture();f.node('template',['Daily']);f.node('writing',['Writing']);
+    f.node('daily',['Today']);f.node('trash',['trash']);
+    for(const [id,parent] of [['copied','daily'],['deleted','trash']]) {
+      const rem=f.node(id,['Tagged'],parent);rem.isDoc=true;rem.tags=['writing'];
+    }
+    expect((await f.api.captureCatalog(['writing'],'template')).documents).toEqual([]);
+  });
+});
 
 describe('meeting date path',()=>{
   it('uses the exact per-contact document ID after the user renames it',async()=>{

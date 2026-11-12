@@ -25,7 +25,8 @@ LABELS = {'verified': '已正确归档', 'blocked': '堵塞 · 自动恢复中',
           'no_content': '仅开场说明 · 无正文',
           'pending': '待处理', 'retained': '保留未纳入', 'needs_input': '等待用户输入',
           'command_done': '命令回合完成 · 待验收', 'submitted': '已提交 Thread',
-          'cancelled': '已撤回', 'unknown': '状态暂不可核对'}
+          'cancelled': '已撤回', 'unknown': '状态暂不可核对',
+          'held': '续录中 · 已暂停处理', 'superseded': '已合并为续录'}
 EFFECT_LABELS = {'verified': '写入已回读', 'cancelled': '已撤回', 'completed_unverified': '回合完成，待验收',
                  'needs_input': '等待用户输入', 'failed': '执行失败', 'outcome_unknown': '提交结果待核对',
                  'submitted': '已提交，等待结果', 'queued': '已入队', 'delivered': '已送达', 'not_started': '待提交'}
@@ -213,6 +214,10 @@ class Inventory:
                     row['recorded_at'] = stamp.isoformat()
                 if row['id'] in baseline_hashes and not run_ids(row['data']):
                     row.update(status='retained', eligibility='historical_baseline')
+                if re.fullmatch(r'[a-f0-9]{64}', row['id']):
+                    continuation = read_safe(cfg.root / 'capture-holds' / (row['id'] + '.json'), {})
+                    if continuation.get('status') in ('held', 'superseded'):
+                        row['status'] = continuation['status']
                 row['status_label'] = LABELS[row['status']]
                 transcript = read_safe(cfg.artifacts/row['id']/'asr.json', {}).get('text', '')
                 parts = active_parts(row['data'])

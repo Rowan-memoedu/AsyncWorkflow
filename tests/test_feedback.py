@@ -176,16 +176,12 @@ def test_cancelled_feedback_is_not_dispatched(setup,monkeypatch):
 
 
 @pytest.mark.parametrize('notes',['今天练习了吉他。',''])
-def test_new_analysis_routes_feedback_separately_from_ordinary_notes(setup,monkeypatch,notes):
+def test_new_analysis_keeps_whole_recording_without_implicit_feedback_extraction(setup,monkeypatch,notes):
     from async_workflow import flows
-    from async_workflow.core import atomic,digest
     cfg,store,_=setup
     source=cfg.inbox/'10-07-2026 12.00.mp3'
     source.write_bytes(b'fixture recording')
     text=notes+'秘书，更新录音工作流，以后转写保留英文术语。'
-    extracted=feedback.partition(feedback.FeedbackPartition(
-        spans=[{'unit':1 if notes else 0}],request='以后转写保留英文术语。',reason='format'),text)
-    extracted.update(extractor_revision=digest(feedback.RULES),source_hash=digest(text))
     monkeypatch.setattr(flows.Settings,'load',staticmethod(lambda:cfg))
     monkeypatch.setattr(flows,'file_hash',lambda path:store.folder.name)
     monkeypatch.setattr(flows,'probe',lambda *a:30)
@@ -193,28 +189,28 @@ def test_new_analysis_routes_feedback_separately_from_ordinary_notes(setup,monke
     monkeypatch.setattr(flows,'eligibility',lambda *a:'eligible')
     monkeypatch.setattr(flows.recording_types,'confirm_self',lambda *a:'single_self')
     monkeypatch.setattr(flows.asr,'recognize',lambda *a:text)
-    def extract(*a):
-        atomic(store.folder/'feedback.json',extracted)
-        return extracted
-    monkeypatch.setattr(feedback,'prepare',extract)
+    monkeypatch.setattr(feedback,'prepare',lambda *a:pytest.fail('no implicit pre-split'))
+    async def prepare(*args):
+        return ''
+    monkeypatch.setattr(flows.capture_styles,'prepare',prepare)
     calls=[]
     def outline(body,*args):
-        assert body.strip()==notes and notes
+        assert body==text
         calls.append('outline')
-        return '# '+notes
+        return '# Recording\n- '+text
     def split(body,*args):
-        assert body==extracted['remaining_text'] and notes
+        assert body==text
         calls.append('split')
-        return [{'index':0,'source_spans':[[0,len(notes)]],'raw_text':notes,'content_text':notes}]
+        return [{'index':0,'kind':'record' if notes else 'command','destination':'',
+                 'source_spans':[[0,len(text)]],'raw_text':text,'content_text':text}]
     monkeypatch.setattr(flows,'outline_task',outline)
     monkeypatch.setattr(flows,'split_task',split)
     monkeypatch.setattr(flows,'run_deployment',lambda *a,**k:calls.append(a[0]) or SimpleNamespace(id='note-run'))
     monkeypatch.setattr(feedback,'submit',lambda *a:calls.append('feedback-run'))
     flows.analyze_recording.fn(str(source),canary=True)
-    assert calls.count('process-segment/local')==bool(notes)
-    assert calls.count('feedback-run')==1
-    if not notes: assert calls==['feedback-run']
-    assert len(store.read()['segments'])==bool(notes)
+    assert calls==['split','outline','process-segment/local']
+    assert len(store.read()['segments'])==1
+    assert store.read()['segments'][0]['raw_text']==text
 
 
 def test_submitted_feedback_body_is_frozen_across_prompt_revisions(setup,monkeypatch):

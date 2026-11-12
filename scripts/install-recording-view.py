@@ -34,7 +34,9 @@ os.chmod(state, 0o700)
 credentials = state/'credentials.json'
 incoming = json.loads((stage/'credentials.json').read_text())
 if credentials.exists():
-    assert json.loads(credentials.read_text()) == incoming, 'Refuse implicit credential rotation'
+    previous_credentials = json.loads(credentials.read_text())
+    assert previous_credentials['readers'] == incoming['readers'] and previous_credentials['publisher_hash'] == incoming['publisher_hash'], 'Refuse implicit credential rotation'
+    credentials.write_text(json.dumps(incoming))
 else:
     credentials.write_text(json.dumps(incoming))
 os.chown(credentials, account.pw_uid, account.pw_gid)

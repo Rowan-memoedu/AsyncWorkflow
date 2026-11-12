@@ -72,6 +72,8 @@ def submit_file(cfg: Settings, path: Path, *, canary=False):
     if first.st_size == 0 or (first.st_size, first.st_mtime_ns) != (second.st_size, second.st_mtime_ns):
         raise Attention("source_not_stable")
     identity = file_hash(source)
+    from .capture_control import check
+    check(cfg, identity)
     manifest = Manifest(cfg, identity)
     with manifest.lock:
         data = manifest.read()
@@ -148,6 +150,9 @@ def watch(cfg: Settings):
             identity = file_hash(path)
             if identity in historical_hashes:
                 continue
+            from .capture_control import state_path
+            if read_json(state_path(current, identity), {}).get('status') in ('held', 'superseded'):
+                continue
             existing = Manifest(current, identity).read()
             if existing.get("analysis_run") or existing.get("eligibility") == "historical_baseline":
                 continue
@@ -191,6 +196,10 @@ def recover(cfg):
                 data = read_json(file)
             except (OSError, ValueError):
                 report['errors'].append({'recording_id': file.parent.name, 'error': 'manifest_unreadable'})
+                continue
+            from .capture_control import state_path
+            identity = data.get('recording_id', file.parent.name)
+            if len(identity) == 64 and read_json(state_path(cfg, identity), {}).get('status') in ('held', 'superseded'):
                 continue
             for run_id in run_ids(data):
                 if run_id in seen:

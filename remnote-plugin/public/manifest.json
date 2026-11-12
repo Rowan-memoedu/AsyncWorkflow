@@ -4,7 +4,7 @@
   "name": "异步工作流",
   "author": "Personal Async Workflow",
   "description": "将录音片段归入指定文档或录音当日的 Daily Note；仅连接本机异步工作流服务。",
-  "version": {"major":0,"minor":1,"patch":12},
+  "version": {"major":0,"minor":1,"patch":13},
   "repoUrl": "https://github.com/Rowan-memoedu/AsyncWorkflow",
   "enableOnMobile": false,
   "requestNative": false,

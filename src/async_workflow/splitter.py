@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .core import Attention, PROMPT_HASH, Settings, digest
 
-REFINE_REVISION = "quoted-source-format-validation-1"
+REFINE_REVISION = "whole-recording-explicit-split-2"
 
 
 class Span(BaseModel):
@@ -52,6 +52,8 @@ class VoiceDumpSplitResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
     items: list[SplitVoiceItem] = Field(min_length=1)
     noise: list[Span] = Field(default_factory=list)
+    split_requested: bool = False
+    split_evidence: str = ""
 
 
 def units(text: str) -> list[dict]:
@@ -239,10 +241,10 @@ def refinement_identity(settings: Settings) -> str:
     return PROMPT_HASH
 
 
-def refine(settings: Settings, text: str) -> str:
+def refine(settings: Settings, text: str, *, preset: str = '') -> str:
     if settings.refinement_policy == 'content_routed':
         from .refinement import refine as routed_refine
-        return routed_refine(settings, text)
+        return routed_refine(settings, text, preset=preset)
     prompt_bytes = settings.prompt.read_bytes()
     if digest(prompt_bytes) != PROMPT_HASH:
         raise Attention("frozen_prompt_hash_mismatch")
@@ -274,7 +276,8 @@ def split(settings: Settings, text: str, outline: str) -> list[dict]:
         item_schema['properties']['kind']['enum'].remove('command')
         item_schema['properties']['route']['enum']=['remnote']
     payload = {"source_units": units(text), "outline": outline, "configured_script_actions": {k:{"schema":v.get("schema"),"description":v.get("description",k)} for k,v in settings.script_actions.items()}, "schema": schema}
-    messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
+    schema['required'] = list(schema['properties'])
+    messages = [{"role": "system", "content": SYSTEM + WHOLE_RECORDING_RULE}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
     from .core import atomic, now
     for attempt in range(3):
         response = client(settings).chat.completions.create(model=settings.production_model, response_format={"type": "json_object"}, messages=messages)
@@ -286,8 +289,24 @@ def split(settings: Settings, text: str, outline: str) -> list[dict]:
             if any('focus_kind' not in item or 'focus_scope' not in item for item in supplied.get('items', [])):
                 raise ValueError('every item must explicitly include focus_kind and focus_scope; use an empty kind only when no focus type was declared')
             result = VoiceDumpSplitResult.model_validate_json(raw)
+            validate_split_request(result, text)
             return validate_split(result, text)
         except ValueError as exc:
             if attempt == 2:
                 raise Attention("split_schema_or_coverage_failed") from None
             messages += [{"role": "assistant", "content": raw}, {"role": "user", "content": "程序校验失败：" + str(exc)[:600] + "。请重新输出完整 JSON，保留原文含义，仅修正契约错误。"}]
+
+
+# This takes precedence over the legacy topical/focus segmentation rules above.
+WHOLE_RECORDING_RULE = '''
+最高优先级的新规则：默认将整份录音作为一个整体，只输出一个 item。话题转折、不同事项、不同日期、不同类型或新的列表项本身都不是分割指令；不能自动按主题或用途分割。整份内容仍保留嵌套层级，不能为只输出一个 item 而丢失信息。
+仅当本人明确要求把本次录音分成独立记录/分别归档，或明确指定某段与另一段各自单独处理时，才可 split_requested=true，并在 split_evidence 中逐字引用该指令；这时才按原规则分割。被引用的示例、讨论分割功能、否定分割、假设和已撤回的要求均不构成指令。没有指令时 split_requested=false、split_evidence=""，items 长度必须为 1。
+不分割时只提取覆盖整份录音的承载操作，保留全文实际内容；存在多个无法统一的去处且未明确要求分别归档时，destination 留空，由整份的默认入口承载，不能把仅适用局部的口述去处扩大到全文。只对整份都明确委托秘书执行的内容使用 command，混合普通记录时保留整份记录，不把记录变成执行任务。'''
+
+
+def validate_split_request(result, text):
+    if result.split_requested:
+        if not result.split_evidence.strip() or result.split_evidence not in text:
+            raise ValueError('splitting requires an exact explicit instruction from this recording')
+    elif len(result.items) != 1 or result.split_evidence:
+        raise ValueError('without an explicit split instruction keep the entire recording in one item')

@@ -4,7 +4,7 @@
 
 ## 数据与同步
 
-电脑上的 AsyncWorkflow 继续负责小米录音接收、转写、整理与归档。`AsyncWorkflow-mirror` 在当前 Windows 用户登录时启动，每次同步完成后等待 60 秒，再导出完整查看快照。同步失败只影响网页的新鲜度，不阻塞处理后台。
+电脑上的 AsyncWorkflow 继续负责小米录音接收、转写、整理与归档。`AsyncWorkflow-mirror` 在当前 Windows 用户登录时启动，约每分钟发布完整查看快照和分类目录，每 5 秒检查手机控制请求。目录或插件故障不阻塞查看快照同步。
 
 快照包含录音列表、转写、正文分块、实际归档路径与节点、处理状态和 Thread 链接。不包含原音频、本机文件路径、完整 manifest、运行配置或平台凭据。扫描不完整时保留服务器上一份结果；服务端先校验完整结构，再原子替换快照，拒绝旧时间戳、重复 ID 和超过 32 MiB 的更新。
 
@@ -12,7 +12,7 @@
 
 ## 访问与凭据
 
-HTTPS 网页、静态资源和查询接口均要求登录。电脑与手机使用不同的只读访问密钥；同步器使用另一枚仅可发布快照的密钥，不能用于读取页面。所有密钥随机生成，服务器只保存 SHA-256 摘要。
+HTTPS 网页、静态资源和查询接口均要求登录。电脑密钥只读；手机密钥另可提交有严格字段限制的新建 Document 与续录请求。同步器的发布密钥可更新快照、目录和请求结果，不能用于读取页面。所有密钥随机生成，服务器只保存 SHA-256 摘要；既有密钥保持不变。控制请求的边界见 [分类录音说明](capture-routing.md)。
 
 本机管理材料位于 `D:/AppData/RecordingView`，同步器连接文件为 `D:/AppData/AsyncWorkflow/mirror-connection.json`。这些文件不进入 Git。手机密钥通过应用专属目录临时导入，随后转存不可备份的私有目录，不编入 APK。电脑登录材料保存在本机 `电脑登录.txt`，首次访问网页时填写。
 
@@ -24,7 +24,7 @@ HTTPS 网页、静态资源和查询接口均要求登录。电脑与手机使�
 - 服务源码位于 `/opt/recording-view/releases`，`app` 符号链接指向部署版本，依赖位于独立虚拟环境。
 - 查看数据与凭据摘要位于 `/var/lib/recording-view`，不在 Web 静态目录中。
 
-在 Windows 仓库运行 `python scripts/deploy-recording-view.py`。它沿用现有 SSH 管理入口，打包明确列出的源码与静态资源，拒绝隐式轮换现有服务凭据；先验证 Nginx 和后台，再重载 Nginx。部署信息记录在 `/opt/recording-view/deployment.json`。
+在 Windows 仓库运行 `python scripts/deploy-recording-view.py --output D:/Artifacts/AsyncWorkflow/<delivery-directory>`。它沿用现有 SSH 管理入口，打包明确列出的源码与静态资源，拒绝隐式轮换现有服务凭据；先验证 Nginx 和后台，再重载 Nginx。部署信息记录在 `/opt/recording-view/deployment.json`。
 
 本机通过 `scripts/install-startup.ps1 -Roles mirror -Start` 注册同步器。单次核对用 `.venv/Scripts/python.exe -m async_workflow.mirror_sync --once`。状态见 `D:/AppData/AsyncWorkflow/mirror-status.json`，只记录时间、数量、字节数和错误类型。重载仅用 `scripts/restart-services.ps1 -Roles mirror`。
 
