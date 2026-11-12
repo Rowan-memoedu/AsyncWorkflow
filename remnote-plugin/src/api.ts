@@ -102,10 +102,11 @@ export class WorkflowAPI {
       if(visited.has(rem._id)) return;
       if(depth>64 || visited.size>=20000) throw new Error('capture_tree_too_large');
       visited.add(rem._id);
-      const title=await this.title(rem);
-      const full=[...path,title];
+      let full=path;
       let next=parent;
       if(await rem.isDocument()) {
+        const title=await this.title(rem);
+        full=[...path,title];
         documents.push({id:rem._id,title,parent_id:parent,path:full,tags:(await rem.getTagRems()).map(n=>n._id)});
         if(documents.length>300) throw new Error('capture_catalog_too_large');
         next=rem._id;

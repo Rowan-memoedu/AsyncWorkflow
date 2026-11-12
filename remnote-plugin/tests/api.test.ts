@@ -73,6 +73,18 @@ describe('capture catalog',()=>{
     }
     expect((await f.api.captureCatalog(['writing'],'template')).documents).toEqual([]);
   });
+  it('never renders body rich text while locating descendant documents',async()=>{
+    const f=fixture();f.node('template',['Daily']);f.node('writing',['Writing']);
+    f.parent.isDoc=true;f.parent.tags=['writing'];
+    f.node('body',[{unsupportedBodyMedia:true}],'parent');
+    f.node('deep',['Child'],'body').isDoc=true;
+    f.plugin.richText.toString=async(text:any[])=>{
+      if(text.some(v=>typeof v!=='string'))throw new Error('Body renderer unavailable');
+      return text.join('');
+    };
+    const result=await f.api.captureCatalog(['writing'],'template');
+    expect(result.documents.map(d=>d.path)).toEqual([['Target'],['Target','Child']]);
+  });
 });
 
 describe('meeting date path',()=>{
