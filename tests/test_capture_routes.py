@@ -53,10 +53,10 @@ def test_default_is_exact_and_needs_no_model_or_remnote_read(cfg, monkeypatch, k
     assert result['recorded_day'] == '2026-11-01'
 
 
-def test_explicit_spoken_destination_overrides_only_its_segment(cfg):
+def test_selected_directory_overrides_spoken_destinations_and_focus(cfg):
     meta = capture_routes.metadata(name(), cfg)
-    assert capture_routes.default_plan(meta, 'another document', '2026-11-01') is None
-    assert capture_routes.default_plan(meta, '', '2026-11-01', {'focus_kind': 'todo'}) is None
+    assert capture_routes.default_plan(meta, 'another document', '2026-11-01')['branch_path'] == ['Diary', 'Health']
+    assert capture_routes.default_plan(meta, '', '2026-11-01', {'focus_kind': 'todo'})['branch_path'] == ['Diary', 'Health']
     assert capture_routes.default_plan(meta, '', '2026-11-01')['branch_path'] == ['Diary', 'Health']
     assert meta['capture_default']['path'] == ['Diary', 'Health']
 
@@ -99,14 +99,24 @@ def test_bound_daily_node_rename_refreshes_new_and_saved_routes(cfg):
     assert capture_routes.metadata(name(), cfg)['capture_error'] == 'capture_template_node_missing_or_ambiguous'
 
 
-def test_spoken_document_beats_inferred_todo_for_tagged_audio(cfg, monkeypatch):
+def test_selected_directory_never_calls_spoken_destination_resolver(cfg, monkeypatch):
     atomic(cfg.root/'daily-template.json', {'template_id': 'template', 'version': 'test',
                                           'tree': {'children': [{'title': '其他碎片', 'children': []}]}})
     async def choose(*args):
-        return {'type': 'document', 'parent_id': 'spoken-target', 'review_eligible': False}
+        pytest.fail('selected directory must bypass semantic target resolution')
     monkeypatch.setattr(routing, 'choose_document', choose)
     monkeypatch.setattr(routing, 'choose_learning_target', lambda *a: None)
     meta = {**capture_routes.metadata(name(), cfg), 'recorded_at': '2026-11-01T23:59:59+08:00'}
     result = asyncio.run(routing.plan(cfg, None, None, 'A specific document', 'do this later', meta,
                                      item={'kind': 'todo'}))
-    assert result['parent_id'] == 'spoken-target'
+    assert result['branch_path'] == ['Diary', 'Health']
+
+
+def test_selected_record_preserves_secretary_words_without_execution(monkeypatch):
+    from async_workflow import splitter
+    monkeypatch.setattr(splitter, 'client', lambda *_: pytest.fail('no classification for selected directory'))
+    source = 'Secretary, update the project.\n记录原话，不因关键词执行。'
+    parts = splitter.selected_record(source)
+    assert len(parts) == 1 and parts[0]['kind'] == 'record' and parts[0]['route'] == 'remnote'
+    assert parts[0]['raw_text'] == source == parts[0]['content_text']
+    assert parts[0]['destination'] == ''
