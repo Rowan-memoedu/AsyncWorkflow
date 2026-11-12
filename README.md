@@ -38,9 +38,9 @@
 
 新增录音自动处理于北京时间 14:02:06 开启，每半小时扫描一次。最近五条均已完成或跳过；既有类型准入验收见 `D:/Artifacts/AsyncWorkflow/2026-10-07/recording-types/结果.md`。下一条真实手机新增录音的上传到归档链路仍待观察。
 
-Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → 阿里云 FUN-ASR → 原结构化提示词 / Codex Exec → 语义分块与操作指令分离 → 独立 RemNote 插件、官方 Codex App Server 或已配置 CLI。
+Windows 本地异步录音工作流：XiaomiAlbumSyncer → Prefect → 阿里云 FUN-ASR → 原结构化提示词 / Codex Exec → 整体归档（明确口述分割时才拆分）→ 独立 RemNote 插件、官方 Codex App Server 或已配置 CLI。
 
-主体代码和本机服务已搭建，正式录音入口 `enabled=true`。独立 RemNote 插件当前为 0.1.12；当前归档验收见上方历史误判复核。此前的桌面续接、断线恢复、跨日归档和小米下载完整性验收仍保留；旧任务的 Thread 收据与最新秘书委托准入规则分别保存，规则修订不重放旧动作。
+主体代码和本机服务已搭建，正式录音入口 `enabled=true`。独立 RemNote 插件当前为 0.1.13，支持标签驱动的目录同步、任意层级新建 Document 和录音续录协调，协议见 [录音目录与续录](docs/capture-routing.md)。此前的历史误判修复、桌面续接、断线恢复、跨日归档和小米下载完整性验收仍保留；旧任务的 Thread 收据与最新秘书委托准入规则分别保存，规则修订不重放旧动作。
 
 ## 边界
 
