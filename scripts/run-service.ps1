@@ -10,7 +10,7 @@ $env:ASYNC_WORKFLOW_CONFIG="$runtimeRoot\config.json"
 $env:PYTHONUTF8='1'
 $env:TEMP='D:\Caches\AsyncWorkflow\tmp'
 $env:TMP=$env:TEMP
-New-Item -ItemType Directory -Force $env:TEMP,"$runtimeRoot\logs","$runtimeRoot\xiaomi" | Out-Null
+New-Item -ItemType Directory -Force $env:TEMP,"$runtimeRoot\logs","$runtimeRoot\locks","$runtimeRoot\xiaomi" | Out-Null
 Set-Location -LiteralPath $projectRoot
 $python="$projectRoot\.venv\Scripts\python.exe"
 $lockFile="$runtimeRoot\locks\service-$Role.lock"
@@ -22,7 +22,9 @@ if($Role -in @('runner','watcher')) {
   }
   if(-not $ready){exit 1}
 }
-Start-Transcript -Path "$runtimeRoot\logs\$Role.task.log" -Append | Out-Null
+# The dictation job has no console; transcript title updates can fail with
+# ERROR_NO_DATA after a headless console disappears. Native output is logged below.
+if($Role -ne 'dictation'){Start-Transcript -Path "$runtimeRoot\logs\$Role.task.log" -Append | Out-Null}
 switch($Role) {
   dictation { & $python -m async_workflow.dictation_gateway 2>&1 | Out-File -FilePath "$runtimeRoot\logs\dictation.output.log" -Append -Encoding utf8 }
   # Capture native output that Start-Transcript alone does not retain reliably.
